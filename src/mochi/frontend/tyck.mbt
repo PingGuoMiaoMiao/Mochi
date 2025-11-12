@@ -18,7 +18,7 @@ pub struct Type {
   param_types : Array[Type]
   return_type : Type?
   tuple_element_types : Array[Type]
-  element_type : Type?  // For Array type, stores the element type
+  element_type : Type? // For Array type, stores the element type
 }
 
 ///|
@@ -513,8 +513,32 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
           StmtKind::Function(nested_function_stmt) => {
             // Determine nested function type
             let nested_param_types : Array[Type] = Array::new()
-            for _param in nested_function_stmt.parameters {
-              nested_param_types.push(Type::int())
+            for param in nested_function_stmt.parameters {
+              // Parse parameter type from function signature
+              let param_type = match param.type_name {
+                Some(type_token) =>
+                  // Parse type from token
+                  if type_token.lexeme == "Array" {
+                    // Array type - check for element type
+                    match param.element_type_name {
+                      Some(element_token) => {
+                        let element_type = self.parse_type_from_token(
+                          element_token,
+                        )
+                        Type::array_type(element_type)
+                      }
+                      None =>
+                        // No element type specified, use Double as default
+                        Type::array_type(Type::double())
+                    }
+                  } else {
+                    self.parse_type_from_token(type_token)
+                  }
+                None =>
+                  // No type annotation, use unknown
+                  Type::unknown()
+              }
+              nested_param_types.push(param_type)
             }
             let nested_return_type = match nested_function_stmt.return_type {
               Some(token) =>
@@ -588,20 +612,18 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
                   let element_type = self.parse_type_from_token(element_token)
                   Type::array_type(element_type)
                 }
-                None => {
+                None =>
                   // No element type specified, use Double as default
                   Type::array_type(Type::double())
-                }
               }
             } else {
               self.parse_type_from_token(type_token)
             }
             self.bind_token_with_type(param.name, param_type)
           }
-          None => {
+          None =>
             // No type annotation, use unknown
             self.bind_token_with_type(param.name, Type::unknown())
-          }
         }
       }
       // Second pass: type check all statements
@@ -616,11 +638,10 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
     StmtKind::While(while_stmt) => self.visit_while_stmt(while_stmt)
     StmtKind::If(if_stmt) => self.visit_if_stmt(if_stmt)
     StmtKind::Assign(assign_stmt) => self.visit_assign_stmt(assign_stmt)
-    StmtKind::Struct(_struct_def) => {
+    StmtKind::Struct(_struct_def) =>
       // Struct definitions are type declarations, no type checking needed
       // In a full implementation, we'd add the struct type to the environment
       ()
-    }
   }
 }
 
@@ -712,19 +733,17 @@ fn Tycker::visit_let_stmt(self : Tycker, let_stmt : LetStmt) -> Unit {
         }
         None => ()
       }
-    None => {
+    None =>
       // If no explicit type annotation, check if value is a tuple
       // For tuple destructuring like let (x, _, _) = v, extract first element type
       match value_type.kind {
-        TypeKind::Tuple => {
+        TypeKind::Tuple =>
           // Extract first element type for tuple destructuring
           if value_type.tuple_element_types.length() > 0 {
             binding_type = value_type.tuple_element_types[0]
           }
-        }
         _ => ()
       }
-    }
   }
   self.bind_token_with_type(let_stmt.name, binding_type)
 }
@@ -839,18 +858,10 @@ fn Tycker::visit_assign_stmt(self : Tycker, assign_stmt : AssignStmt) -> Unit {
   // Get target type (can be identifier or array index)
   let target_type = match assign_stmt.target.kind {
     ExprKind::Ident(token) => self.resolve_ident(token)
-    ExprKind::Index(index_expr) => {
-      // For array index assignment, get the element type
-      let array_type = self.visit_expr(index_expr.array)
-      match array_type.kind {
-        TypeKind::Array =>
-          match array_type.element_type {
-            Some(elem_type) => elem_type
-            None => Type::unknown()
-          }
-        _ => Type::unknown()
-      }
-    }
+    ExprKind::Index(index_expr) =>
+      // For array index assignment, get the element type by visiting the index expression
+      // This correctly handles nested indices like a[i][j]
+      self.visit_index_expr(index_expr)
     _ => Type::unknown()
   }
   let value_type = self.visit_expr(assign_stmt.value)
@@ -1068,16 +1079,16 @@ fn Tycker::visit_unary_expr(self : Tycker, unary : UnaryExpr) -> Type {
 fn Tycker::visit_call_expr(self : Tycker, call_expr : CallExpr) -> Type {
   // Check for built-in functions like Array::make
   match call_expr.callee.kind {
-    ExprKind::Ident(_token) => {
+    ExprKind::Ident(_token) =>
       // Check for qualified identifiers like Array::make
       // For now, we'll handle them in the general case below
       ()
-    }
-    ExprKind::FieldAccess(field_access) => {
+    ExprKind::FieldAccess(field_access) =>
       // Check for Array::make
       match field_access.object.kind {
-        ExprKind::Ident(qualifier_token) => {
-          if qualifier_token.lexeme == "Array" && field_access.field.lexeme == "make" {
+        ExprKind::Ident(qualifier_token) =>
+          if qualifier_token.lexeme == "Array" &&
+            field_access.field.lexeme == "make" {
             // Array::make(length, element) -> Array[element_type]
             // Array::make can be used in two ways:
             // 1. Array::make(n, value) -> Array[value_type] (creates array with n copies of value)
@@ -1090,10 +1101,8 @@ fn Tycker::visit_call_expr(self : Tycker, call_expr : CallExpr) -> Type {
               return Type::array_type(element_type)
             }
           }
-        }
         _ => ()
       }
-    }
     _ => ()
   }
   // Check callee type
@@ -1146,6 +1155,7 @@ fn Tycker::visit_call_expr(self : Tycker, call_expr : CallExpr) -> Type {
       // Check argument types
       for arg in call_expr.arguments {
         let _ = self.visit_expr(arg)
+
       }
       // Return unknown as we can't infer the return type
       Type::unknown()
@@ -1155,6 +1165,7 @@ fn Tycker::visit_call_expr(self : Tycker, call_expr : CallExpr) -> Type {
       // Check argument types
       for arg in call_expr.arguments {
         let _ = self.visit_expr(arg)
+
       }
       // Return Int as default (will be improved)
       Type::int()
@@ -1191,7 +1202,7 @@ fn Tycker::visit_index_expr(self : Tycker, index_expr : IndexExpr) -> Type {
   // Return the element type of the array
   match array_type.kind {
     TypeKind::Array =>
-      match array_type.return_type {
+      match array_type.element_type {
         Some(elem_type) => elem_type
         None => Type::unknown()
       }
@@ -1439,7 +1450,10 @@ fn Tycker::parse_type_from_token(_self : Tycker, type_token : Token) -> Type {
 }
 
 ///|
-fn Tycker::visit_field_access(self : Tycker, field_access : FieldAccessExpr) -> Type {
+fn Tycker::visit_field_access(
+  self : Tycker,
+  field_access : FieldAccessExpr,
+) -> Type {
   // Check object type
   let _object_type = self.visit_expr(field_access.object)
   // For now, return unknown type

@@ -263,15 +263,13 @@ fn llvm_gen_assign(gen : LLVMGen, assign_stmt : AssignStmt) -> (String, String) 
         (value_code, value_temp)
       }
     }
-    ExprKind::Index(_index_expr) => {
+    ExprKind::Index(_index_expr) =>
       // Array index assignment - for now, just return the value code
       // In a full implementation, we'd need to generate store instructions
       (value_code, value_temp)
-    }
-    _ => {
+    _ =>
       // Invalid assignment target - return value code anyway
       (value_code, value_temp)
-    }
   }
 }
 

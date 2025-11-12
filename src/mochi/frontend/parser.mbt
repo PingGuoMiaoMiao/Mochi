@@ -75,9 +75,7 @@ fn Parser::parse_statement(self : Parser) -> Stmt? {
             // Skip field access: .field
             offset = offset + 1
             match self.peek_kind_offset(offset) {
-              TokenKind::Ident => {
-                offset = offset + 1
-              }
+              TokenKind::Ident => offset = offset + 1
               _ => break
             }
           }
@@ -108,10 +106,12 @@ fn Parser::parse_statement(self : Parser) -> Stmt? {
             is_assign = true
             break
           }
-          TokenKind::Semicolon | TokenKind::RParen | TokenKind::RBrace | TokenKind::Comma => {
+          TokenKind::Semicolon
+          | TokenKind::RParen
+          | TokenKind::RBrace
+          | TokenKind::Comma =>
             // End of expression, not an assignment
             break
-          }
           _ => {
             // Continue looking
             offset = offset + 1
@@ -579,7 +579,10 @@ fn Parser::parse_assign_statement(self : Parser) -> Stmt? {
           field,
           range: field_range,
         }
-        target = { kind: ExprKind::FieldAccess(field_access), range: field_range }
+        target = {
+          kind: ExprKind::FieldAccess(field_access),
+          range: field_range,
+        }
       }
       TokenKind::LBracket => {
         let open_bracket = self.advance()
@@ -700,6 +703,7 @@ fn Parser::parse_if_statement(self : Parser) -> Stmt? {
           TokenKind::Semicolon => {
             // Skip standalone semicolons (empty statements)
             let _ = self.advance()
+
           }
           _ =>
             match self.parse_statement() {
@@ -1005,7 +1009,8 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                                       let _ = self.advance() // consume type
                                       match self.peek().kind {
                                         TokenKind::Comma => {
-                                          let _ = self.advance() // consume comma
+                                          let _ = self.advance()
+                                          // consume comma
                                         }
                                         TokenKind::RParen => {
                                           let _ = self.advance() // consume RParen
@@ -1123,7 +1128,7 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                                         let _ = self.advance() // consume RParen
                                         match self.peek().kind {
                                           TokenKind::Arrow
-                                            | TokenKind::ThinArrow => {
+                                          | TokenKind::ThinArrow => {
                                             let _ = self.advance() // consume ->
                                             match self.peek().kind {
                                               TokenKind::Ident => {
@@ -1180,7 +1185,9 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                                       match self.peek().kind {
                                         TokenKind::Ident => {
                                           let nested_element = self.advance() // consume nested element type
-                                          element_type_name = Some(nested_element) // Update element type for nested array
+                                          element_type_name = Some(
+                                            nested_element,
+                                          ) // Update element type for nested array
                                           match self.peek().kind {
                                             TokenKind::RBracket => {
                                               let _ = self.advance() // consume ]
@@ -1236,21 +1243,29 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                             type_name = Some(type_token) // Store Array token as type name
                             // element_type_name should be set in the TokenKind::Ident branch above
                           }
-                          _ => {
-                            type_name = Some(type_token) // Regular type name
-                            // No element type for non-Array types
-                          }
+                          _ => type_name = Some(type_token) // Regular type name
+                          // No element type for non-Array types
                         }
                       }
                       _ =>
                         self.error(self.peek(), "Expected type name after ':'.")
                     }
-                    let param : FunctionParam = { name: param_name, colon, type_name, element_type_name }
+                    let param : FunctionParam = {
+                      name: param_name,
+                      colon,
+                      type_name,
+                      element_type_name,
+                    }
                     parameters.push(param)
                   }
                   _ => {
                     // No type annotation
-                    let param : FunctionParam = { name: param_name, colon: None, type_name: None, element_type_name: None }
+                    let param : FunctionParam = {
+                      name: param_name,
+                      colon: None,
+                      type_name: None,
+                      element_type_name: None,
+                    }
                     parameters.push(param)
                   }
                 }
@@ -1437,7 +1452,8 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                   let _ = self.advance() // consume element type
                   match self.peek().kind {
                     TokenKind::RBracket => {
-                      let _ = self.advance() // consume ]
+                      let _ = self.advance()
+                      // consume ]
                     }
                     TokenKind::LBracket => {
                       // Nested Array[Array[Type]]
@@ -1450,31 +1466,42 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                               let _ = self.advance() // consume ]
                               match self.peek().kind {
                                 TokenKind::RBracket => {
-                                  let _ = self.advance() // consume outer ]
+                                  let _ = self.advance()
+                                  // consume outer ]
                                 }
-                                _ => {
-                                  self.error(self.peek(), "Expected ']' after nested array type.")
-                                }
+                                _ =>
+                                  self.error(
+                                    self.peek(),
+                                    "Expected ']' after nested array type.",
+                                  )
                               }
                             }
-                            _ => {
-                              self.error(self.peek(), "Expected ']' after nested array element type.")
-                            }
+                            _ =>
+                              self.error(
+                                self.peek(),
+                                "Expected ']' after nested array element type.",
+                              )
                           }
                         }
-                        _ => {
-                          self.error(self.peek(), "Expected element type in nested Array[Type].")
-                        }
+                        _ =>
+                          self.error(
+                            self.peek(),
+                            "Expected element type in nested Array[Type].",
+                          )
                       }
                     }
-                    _ => {
-                      self.error(self.peek(), "Expected ']' after array element type.")
-                    }
+                    _ =>
+                      self.error(
+                        self.peek(),
+                        "Expected ']' after array element type.",
+                      )
                   }
                 }
-                _ => {
-                  self.error(self.peek(), "Expected element type in Array[Type].")
-                }
+                _ =>
+                  self.error(
+                    self.peek(),
+                    "Expected element type in Array[Type].",
+                  )
               }
               return_type = Some(type_token) // Use the Array token as return type
             }
@@ -2065,13 +2092,20 @@ fn Parser::parse_identifier_expression(
         field: qualifier[i],
         range: field_range,
       }
-      current_expr = { kind: ExprKind::FieldAccess(field_access), range: field_range }
+      current_expr = {
+        kind: ExprKind::FieldAccess(field_access),
+        range: field_range,
+      }
       i = i + 1
     }
     // Add the final name as a field access
     let dummy_dot : Token = {
       kind: TokenKind::Dot,
-      range: if qualifier.length() > 0 { qualifier[qualifier.length() - 1].range } else { first.range },
+      range: if qualifier.length() > 0 {
+        qualifier[qualifier.length() - 1].range
+      } else {
+        first.range
+      },
       lexeme: "::",
     }
     let final_range = combine_ranges(current_expr.range, name.range)
@@ -2681,11 +2715,10 @@ fn Parser::collect_path(self : Parser, first : Token) -> ParsedPath {
             qualifier.push(current)
             current = self.advance()
           }
-          TokenKind::LBrace => {
+          TokenKind::LBrace =>
             // Point::{ ... } - stop collecting path here
             // The ::{ will be handled by parse_struct_literal
             break
-          }
           _ => {
             self.error(self.peek(), "Expected identifier or '{' after '::'.")
             return { qualifier, name: current }
@@ -3073,6 +3106,7 @@ fn Parser::parse_struct_definition(self : Parser) -> Stmt? {
       TokenKind::Semicolon => {
         // Skip standalone semicolons
         let _ = self.advance()
+
       }
       _ => {
         // Parse field definition: name: Type;
@@ -3104,16 +3138,23 @@ fn Parser::parse_struct_definition(self : Parser) -> Stmt? {
                     let _ = self.advance() // consume element type
                     match self.peek().kind {
                       TokenKind::RBracket => {
-                        let _ = self.advance() // consume ]
+                        let _ = self.advance()
+                        // consume ]
                       }
                       _ => {
-                        self.error(self.peek(), "Expected ']' after array element type.")
+                        self.error(
+                          self.peek(),
+                          "Expected ']' after array element type.",
+                        )
                         return None
                       }
                     }
                   }
                   _ => {
-                    self.error(self.peek(), "Expected element type in Array[Type].")
+                    self.error(
+                      self.peek(),
+                      "Expected element type in Array[Type].",
+                    )
                     return None
                   }
                 }

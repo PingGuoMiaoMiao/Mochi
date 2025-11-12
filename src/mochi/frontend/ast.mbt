@@ -253,7 +253,7 @@ pub struct LetStmt {
 
 ///|
 pub struct AssignStmt {
-  target : Expr  // Can be Ident or Index expression
+  target : Expr // Can be Ident or Index expression
   assign : Token
   value : Expr
   semicolon : Token
@@ -265,7 +265,7 @@ pub struct FunctionParam {
   name : Token
   colon : Token?
   type_name : Token?
-  element_type_name : Token?  // For Array[Type], stores the element type token
+  element_type_name : Token? // For Array[Type], stores the element type token
 }
 
 ///|
