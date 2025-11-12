@@ -192,6 +192,279 @@ test "guard literal pattern" {
 }
 
 ///|
+test "parse let statement without type" {
+  let lex = tokenize("let answer = 42;")
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  inspect(result.declarations.length().to_string(), content="1")
+  match result.declarations[0].kind {
+    StmtKind::Let(let_stmt) => {
+      inspect(let_stmt.name.lexeme, content="answer")
+      match let_stmt.type_name {
+        Some(_) => inspect("unexpected", content="None")
+        None => inspect("None", content="None")
+      }
+      match let_stmt.value.kind {
+        ExprKind::Literal(token) => inspect(token.lexeme, content="42")
+        _ => inspect("unexpected", content="42")
+      }
+    }
+    _ => inspect("unexpected", content="let")
+  }
+}
+
+///|
+test "parse let statement with type annotation" {
+  let lex = tokenize("let total: Int = 1;")
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  inspect(result.declarations.length().to_string(), content="1")
+  match result.declarations[0].kind {
+    StmtKind::Let(let_stmt) => {
+      inspect(let_stmt.name.lexeme, content="total")
+      match let_stmt.type_name {
+        Some(token) => inspect(token.lexeme, content="Int")
+        None => inspect("missing", content="Int")
+      }
+    }
+    _ => inspect("unexpected", content="let")
+  }
+}
+
+///|
+test "parse function with let body" {
+  let source = "fn main { let x = 1; x }"
+  let lex = tokenize(source)
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  inspect(result.declarations.length().to_string(), content="1")
+  match result.declarations[0].kind {
+    StmtKind::Function(function_stmt) => {
+      inspect(function_stmt.name.lexeme, content="main")
+      inspect(function_stmt.body.length().to_string(), content="2")
+      match function_stmt.body[0].kind {
+        StmtKind::Let(_) => inspect("let", content="let")
+        _ => inspect("unexpected", content="let")
+      }
+      match function_stmt.body[1].kind {
+        StmtKind::ExprStmt(_) => inspect("expr", content="expr")
+        _ => inspect("unexpected", content="expr")
+      }
+    }
+    _ => inspect("unexpected", content="function")
+  }
+}
+
+///|
+test "parse let mut statement" {
+  let lex = tokenize("let mut counter = 0;")
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  inspect(result.declarations.length().to_string(), content="1")
+  match result.declarations[0].kind {
+    StmtKind::Let(let_stmt) =>
+      match let_stmt.mut_keyword {
+        Some(token) => inspect(token.lexeme, content="mut")
+        None => inspect("missing", content="mut")
+      }
+    _ => inspect("unexpected", content="let")
+  }
+}
+
+///|
+test "parse let missing semicolon" {
+  let lex = tokenize("let value = 0")
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="1")
+  inspect(result.errors[0].message, content="Expected ';' after let statement.")
+}
+
+///|
+test "parse return with value" {
+  let lex = tokenize("return 1;")
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  inspect(result.declarations.length().to_string(), content="1")
+  match result.declarations[0].kind {
+    StmtKind::Return(return_stmt) =>
+      match return_stmt.value {
+        Some(expr) =>
+          match expr.kind {
+            ExprKind::Literal(token) => inspect(token.lexeme, content="1")
+            _ => inspect("unexpected", content="1")
+          }
+        None => inspect("missing", content="value")
+      }
+    _ => inspect("unexpected", content="return")
+  }
+}
+
+///|
+test "parse return without value" {
+  let lex = tokenize("return;")
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  match result.declarations[0].kind {
+    StmtKind::Return(return_stmt) =>
+      match return_stmt.value {
+        Some(_) => inspect("unexpected", content="None")
+        None => inspect("None", content="None")
+      }
+    _ => inspect("unexpected", content="return")
+  }
+}
+
+///|
+test "parse function with return type" {
+  let source = "fn run -> Int { return 1; }"
+  let lex = tokenize(source)
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  match result.declarations[0].kind {
+    StmtKind::Function(function_stmt) =>
+      match function_stmt.return_type {
+        Some(token) => inspect(token.lexeme, content="Int")
+        None => inspect("missing", content="Int")
+      }
+    _ => inspect("unexpected", content="function")
+  }
+}
+
+///|
+test "parse binary precedence" {
+  let source = "fn main { return 1 + 2 * 3; }"
+  let lex = tokenize(source)
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  match result.declarations[0].kind {
+    StmtKind::Function(function_stmt) =>
+      match function_stmt.body[0].kind {
+        StmtKind::Return(return_stmt) =>
+          match return_stmt.value {
+            Some(expr) =>
+              match expr.kind {
+                ExprKind::Binary(binary_expr) => {
+                  inspect(binary_expr.operator.lexeme, content="+")
+                  let left = binary_expr.left
+                  match left.kind {
+                    ExprKind::Literal(token) =>
+                      inspect(token.lexeme, content="1")
+                    _ => inspect("unexpected", content="Literal")
+                  }
+                  let right = binary_expr.right
+                  match right.kind {
+                    ExprKind::Binary(inner) => {
+                      inspect(inner.operator.lexeme, content="*")
+                      match inner.left.kind {
+                        ExprKind::Literal(token) =>
+                          inspect(token.lexeme, content="2")
+                        _ => inspect("unexpected", content="Literal")
+                      }
+                      match inner.right.kind {
+                        ExprKind::Literal(token) =>
+                          inspect(token.lexeme, content="3")
+                        _ => inspect("unexpected", content="Literal")
+                      }
+                    }
+                    _ => inspect("unexpected", content="Binary")
+                  }
+                }
+                _ => inspect("unexpected", content="Binary")
+              }
+            None => inspect("missing", content="return")
+          }
+        _ => inspect("unexpected", content="Return")
+      }
+    _ => inspect("unexpected", content="function")
+  }
+}
+
+///|
+test "parse unary expression" {
+  let source = "return -1;"
+  let lex = tokenize(source)
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  match result.declarations[0].kind {
+    StmtKind::Return(return_stmt) =>
+      match return_stmt.value {
+        Some(expr) =>
+          match expr.kind {
+            ExprKind::Unary(unary_expr) => {
+              inspect(unary_expr.operator.lexeme, content="-")
+              let operand = unary_expr.operand
+              match operand.kind {
+                ExprKind::Literal(token) => inspect(token.lexeme, content="1")
+                _ => inspect("unexpected", content="Literal")
+              }
+            }
+            _ => inspect("unexpected", content="Unary")
+          }
+        None => inspect("missing", content="value")
+      }
+    _ => inspect("unexpected", content="return")
+  }
+}
+
+///|
+test "parse boolean literal" {
+  let source = "return true;"
+  let lex = tokenize(source)
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  match result.declarations[0].kind {
+    StmtKind::Return(return_stmt) =>
+      match return_stmt.value {
+        Some(expr) =>
+          match expr.kind {
+            ExprKind::Literal(token) => inspect(token.lexeme, content="true")
+            _ => inspect("unexpected", content="Literal")
+          }
+        None => inspect("missing", content="value")
+      }
+    _ => inspect("unexpected", content="return")
+  }
+}
+
+///|
+test "parse while statement" {
+  let source = "while true { return; }"
+  let lex = tokenize(source)
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  inspect(result.declarations.length().to_string(), content="1")
+  match result.declarations[0].kind {
+    StmtKind::While(while_stmt) => {
+      match while_stmt.condition.kind {
+        ExprKind::Literal(token) => inspect(token.lexeme, content="true")
+        _ => inspect("unexpected", content="Literal")
+      }
+      inspect(while_stmt.body.length().to_string(), content="1")
+    }
+    _ => inspect("unexpected", content="while")
+  }
+}
+
+///|
+test "parse assignment statement" {
+  let source = "let mut counter = 0; counter = 1;"
+  let lex = tokenize(source)
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  inspect(result.declarations.length().to_string(), content="2")
+  match result.declarations[1].kind {
+    StmtKind::Assign(assign_stmt) => {
+      inspect(assign_stmt.name.lexeme, content="counter")
+      match assign_stmt.value.kind {
+        ExprKind::Literal(token) => inspect(token.lexeme, content="1")
+        _ => inspect("unexpected", content="Literal")
+      }
+    }
+    _ => inspect("unexpected", content="assign")
+  }
+}
+
+///|
 test "match struct pattern" {
   let source = "match value { Point { x: inner } => inner }"
   let lex = tokenize(source)
@@ -856,4 +1129,33 @@ test "match guard missing expression" {
     messages.join("|"),
     content="Expected expression|Expected '=>' in match arm.|Expected expression",
   )
+}
+
+///|
+test "parse let statement" {
+  let source = "let number = 1;"
+  let lex = tokenize(source)
+  inspect(lex.errors.length().to_string(), content="0")
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  inspect(result.declarations.length().to_string(), content="1")
+  match result.declarations[0].kind {
+    StmtKind::Let(let_stmt) => inspect(let_stmt.name.lexeme, content="number")
+    _ => inspect("unexpected", content="let")
+  }
+}
+
+///|
+test "parse simple function" {
+  let source = "fn main() { let value = 1; }"
+  let lex = tokenize(source)
+  inspect(lex.errors.length().to_string(), content="0")
+  let result = parse(lex.tokens)
+  inspect(result.errors.length().to_string(), content="0")
+  inspect(result.declarations.length().to_string(), content="1")
+  match result.declarations[0].kind {
+    StmtKind::Function(function_stmt) =>
+      inspect(function_stmt.body.length().to_string(), content="1")
+    _ => inspect("unexpected", content="function")
+  }
 }

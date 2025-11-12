@@ -129,18 +129,63 @@ fn Scanner::scan_token(self : Scanner) -> Unit {
     '(' => self.emit_token(TokenKind::LParen)
     ')' => self.emit_token(TokenKind::RParen)
     ',' => self.emit_token(TokenKind::Comma)
+    ';' => self.emit_token(TokenKind::Semicolon)
     ':' =>
       if self.match_char(':') {
         self.emit_token(TokenKind::DoubleColon)
       } else {
         self.emit_token(TokenKind::Colon)
       }
-    '|' => self.emit_token(TokenKind::Pipe)
+    '.' => self.emit_token(TokenKind::Dot)
+    '[' => self.emit_token(TokenKind::LBracket)
+    ']' => self.emit_token(TokenKind::RBracket)
+    '|' =>
+      if self.match_char('|') {
+        self.emit_token(TokenKind::PipePipe)
+      } else {
+        self.emit_token(TokenKind::Pipe)
+      }
+    '&' =>
+      if self.match_char('&') {
+        self.emit_token(TokenKind::AmpAmp)
+      } else {
+        self.report_error("Unexpected '&'.")
+      }
+    '+' => self.emit_token(TokenKind::Plus)
+    '-' =>
+      if self.match_char('>') {
+        self.emit_token(TokenKind::ThinArrow)
+      } else {
+        self.emit_token(TokenKind::Minus)
+      }
+    '*' => self.emit_token(TokenKind::Star)
+    '/' => self.emit_token(TokenKind::Slash)
+    '%' => self.emit_token(TokenKind::Percent)
+    '!' =>
+      if self.match_char('=') {
+        self.emit_token(TokenKind::BangEqual)
+      } else {
+        self.emit_token(TokenKind::Bang)
+      }
+    '>' =>
+      if self.match_char('=') {
+        self.emit_token(TokenKind::GreaterEqual)
+      } else {
+        self.emit_token(TokenKind::Greater)
+      }
+    '<' =>
+      if self.match_char('=') {
+        self.emit_token(TokenKind::LessEqual)
+      } else {
+        self.emit_token(TokenKind::Less)
+      }
     '=' =>
       if self.match_char('>') {
         self.emit_token(TokenKind::Arrow)
+      } else if self.match_char('=') {
+        self.emit_token(TokenKind::EqualEqual)
       } else {
-        self.report_error("Unexpected '='.")
+        self.emit_token(TokenKind::Assign)
       }
     _ => self.report_error("Unexpected character.")
   }
@@ -173,6 +218,14 @@ fn keyword_kind(lexeme : String) -> TokenKind {
     "switch" => TokenKind::KeywordSwitch
     "case" => TokenKind::KeywordCase
     "default" => TokenKind::KeywordDefault
+    "let" => TokenKind::KeywordLet
+    "mut" => TokenKind::KeywordMut
+    "fn" => TokenKind::KeywordFn
+    "return" => TokenKind::KeywordReturn
+    "while" => TokenKind::KeywordWhile
+    "struct" => TokenKind::KeywordStruct
+    "true" => TokenKind::LiteralBool
+    "false" => TokenKind::LiteralBool
     _ => TokenKind::Ident
   }
 }

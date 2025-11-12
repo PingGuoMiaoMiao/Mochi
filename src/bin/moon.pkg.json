@@ -1,0 +1,18 @@
+{
+  "is-main": true,
+  "import": [
+    
+    {
+      "path": "PingGuoMiaoMiao/Mochi/src/mochi/frontend",
+      "alias": "frontend"
+    },
+    {
+      "path": "moonbitlang/x/sys",
+      "alias": "sys"
+    },
+    {
+      "path": "moonbitlang/x/fs",
+      "alias": "fs"
+    }
+  ]
+}

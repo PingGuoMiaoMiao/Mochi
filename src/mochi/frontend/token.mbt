@@ -22,6 +22,13 @@ pub enum TokenKind {
   KeywordSwitch
   KeywordCase
   KeywordDefault
+  KeywordLet
+  KeywordMut
+  KeywordFn
+  KeywordReturn
+  KeywordWhile
+  KeywordStruct
+  LiteralBool
   LiteralInt
   LiteralString
   LiteralChar
@@ -32,9 +39,29 @@ pub enum TokenKind {
   RParen
   Comma
   Colon
+  Semicolon
   Arrow
+  ThinArrow
   DoubleColon
   Pipe
+  PipePipe
+  AmpAmp
+  Assign
+  EqualEqual
+  Bang
+  BangEqual
+  Greater
+  GreaterEqual
+  Less
+  LessEqual
+  Plus
+  Minus
+  Star
+  Slash
+  Percent
+  Dot
+  LBracket
+  RBracket
   Underscore
   EndOfFile
 }

@@ -188,8 +188,19 @@ test "tokenize invalid float fraction" {
 ///|
 test "tokenize unexpected equals" {
   let lex = tokenize("=")
-  inspect(lex.errors.length().to_string(), content="1")
-  inspect(lex.errors[0].message, content="Unexpected '='.")
+  inspect(lex.errors.length().to_string(), content="0")
+  inspect(token_kind_name(lex.tokens[0].kind), content="Assign")
+}
+
+///|
+test "tokenize boolean literals" {
+  let lex = tokenize("true false")
+  inspect(lex.errors.length().to_string(), content="0")
+  let kinds : Array[String] = Array::new()
+  for token in lex.tokens {
+    kinds.push(token_kind_name(token.kind))
+  }
+  inspect(kinds.join(","), content="LiteralBool,LiteralBool,EndOfFile")
 }
 
 ///|
@@ -232,6 +243,12 @@ fn token_kind_name(kind : TokenKind) -> String {
     TokenKind::KeywordSwitch => "KeywordSwitch"
     TokenKind::KeywordCase => "KeywordCase"
     TokenKind::KeywordDefault => "KeywordDefault"
+    TokenKind::KeywordLet => "KeywordLet"
+    TokenKind::KeywordMut => "KeywordMut"
+    TokenKind::KeywordFn => "KeywordFn"
+    TokenKind::KeywordReturn => "KeywordReturn"
+    TokenKind::KeywordWhile => "KeywordWhile"
+    TokenKind::LiteralBool => "LiteralBool"
     TokenKind::LiteralInt => "LiteralInt"
     TokenKind::LiteralString => "LiteralString"
     TokenKind::LiteralChar => "LiteralChar"
@@ -242,9 +259,29 @@ fn token_kind_name(kind : TokenKind) -> String {
     TokenKind::RParen => "RParen"
     TokenKind::Comma => "Comma"
     TokenKind::Colon => "Colon"
+    TokenKind::Semicolon => "Semicolon"
     TokenKind::Arrow => "Arrow"
+    TokenKind::ThinArrow => "ThinArrow"
     TokenKind::DoubleColon => "DoubleColon"
     TokenKind::Pipe => "Pipe"
+    TokenKind::PipePipe => "PipePipe"
+    TokenKind::AmpAmp => "AmpAmp"
+    TokenKind::Assign => "Assign"
+    TokenKind::EqualEqual => "EqualEqual"
+    TokenKind::Bang => "Bang"
+    TokenKind::BangEqual => "BangEqual"
+    TokenKind::Greater => "Greater"
+    TokenKind::GreaterEqual => "GreaterEqual"
+    TokenKind::Less => "Less"
+    TokenKind::LessEqual => "LessEqual"
+    TokenKind::Plus => "Plus"
+    TokenKind::Minus => "Minus"
+    TokenKind::Star => "Star"
+    TokenKind::Slash => "Slash"
+    TokenKind::Percent => "Percent"
+    TokenKind::Dot => "Dot"
+    TokenKind::LBracket => "LBracket"
+    TokenKind::RBracket => "RBracket"
     TokenKind::Underscore => "Underscore"
     TokenKind::EndOfFile => "EndOfFile"
   }
