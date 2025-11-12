@@ -224,6 +224,7 @@ fn keyword_kind(lexeme : String) -> TokenKind {
     "return" => TokenKind::KeywordReturn
     "while" => TokenKind::KeywordWhile
     "struct" => TokenKind::KeywordStruct
+    "enum" => TokenKind::KeywordEnum
     "true" => TokenKind::LiteralBool
     "false" => TokenKind::LiteralBool
     _ => TokenKind::Ident

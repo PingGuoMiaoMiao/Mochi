@@ -454,7 +454,10 @@ test "parse assignment statement" {
   inspect(result.declarations.length().to_string(), content="2")
   match result.declarations[1].kind {
     StmtKind::Assign(assign_stmt) => {
-      inspect(assign_stmt.name.lexeme, content="counter")
+      match assign_stmt.target.kind {
+        ExprKind::Ident(token) => inspect(token.lexeme, content="counter")
+        _ => inspect("unexpected", content="Ident")
+      }
       match assign_stmt.value.kind {
         ExprKind::Literal(token) => inspect(token.lexeme, content="1")
         _ => inspect("unexpected", content="Literal")

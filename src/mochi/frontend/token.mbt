@@ -28,6 +28,7 @@ pub enum TokenKind {
   KeywordReturn
   KeywordWhile
   KeywordStruct
+  KeywordEnum
   LiteralBool
   LiteralInt
   LiteralString

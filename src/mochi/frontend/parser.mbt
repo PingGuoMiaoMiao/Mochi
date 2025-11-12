@@ -59,6 +59,7 @@ fn Parser::parse_statement(self : Parser) -> Stmt? {
     TokenKind::KeywordWhile => self.parse_while_statement()
     TokenKind::KeywordIf => self.parse_if_statement()
     TokenKind::KeywordStruct => self.parse_struct_definition()
+    TokenKind::KeywordEnum => self.parse_enum_definition()
     TokenKind::Ident => {
       // Check if this is an assignment statement
       // For simple assignments like "x = ...", offset 1 is Assign
@@ -925,6 +926,47 @@ fn Parser::parse_while_statement(self : Parser) -> Stmt? {
 ///|
 fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
   let fn_keyword = self.advance()
+  // Parse generic type parameters: [T] or [T, U, ...]
+  let generic_params : Array[Token] = Array::new()
+  match self.peek().kind {
+    TokenKind::LBracket => {
+      let _ = self.advance() // consume [
+      while !self.is_at_end() {
+        match self.peek().kind {
+          TokenKind::RBracket => {
+            let _ = self.advance() // consume ]
+            break
+          }
+          TokenKind::Ident => {
+            let type_param = self.advance()
+            generic_params.push(type_param)
+            match self.peek().kind {
+              TokenKind::Comma => {
+                let _ = self.advance()
+                // consume comma
+              }
+              TokenKind::RBracket => {
+                let _ = self.advance() // consume ]
+                break
+              }
+              _ => {
+                self.error(
+                  self.peek(),
+                  "Expected ',' or ']' in generic parameters.",
+                )
+                return None
+              }
+            }
+          }
+          _ => {
+            self.error(self.peek(), "Expected type parameter name or ']'.")
+            return None
+          }
+        }
+      }
+    }
+    _ => () // No generic parameters
+  }
   let name = match self.peek().kind {
     TokenKind::Ident => self.advance()
     _ => {
@@ -1094,7 +1136,13 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                                         let _ = self.advance() // consume ->
                                         match self.peek().kind {
                                           TokenKind::Ident => {
-                                            let _ = self.advance() // consume return type
+                                            let return_type_token = self.advance() // consume return type
+                                            // Set element_type_name to return type token for function type
+                                            // We'll use a special marker: if element_type_name is the return type
+                                            // and we're in Array context, it's a function type
+                                            element_type_name = Some(
+                                              return_type_token,
+                                            )
                                             match self.peek().kind {
                                               TokenKind::RBracket => {
                                                 let _ = self.advance()
@@ -1132,7 +1180,13 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                                             let _ = self.advance() // consume ->
                                             match self.peek().kind {
                                               TokenKind::Ident => {
-                                                let _ = self.advance() // consume return type
+                                                let return_type_token = self.advance() // consume return type
+                                                // Set element_type_name to return type token for function type
+                                                // We'll detect function type by checking if element_type_name
+                                                // is set and type_name is Array, then build function type
+                                                element_type_name = Some(
+                                                  return_type_token,
+                                                )
                                                 match self.peek().kind {
                                                   TokenKind::RBracket => {
                                                     let _ = self.advance()
@@ -1339,9 +1393,59 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
               }
             }
             TokenKind::Ident => {
-              let _ = self.advance() // consume param type
+              let first_type = self.advance() // consume first type
               match self.peek().kind {
+                TokenKind::Comma => {
+                  // Tuple type: (Type, Type, ...)
+                  let _ = self.advance() // consume comma
+                  // Parse remaining types
+                  for {
+                    if self.is_at_end() {
+                      break
+                    }
+                    match self.peek().kind {
+                      TokenKind::RParen => break
+                      TokenKind::Ident => {
+                        let _ = self.advance() // consume type
+                        match self.peek().kind {
+                          TokenKind::Comma => {
+                            let _ = self.advance()
+                            // consume comma
+                          }
+                          TokenKind::RParen => break
+                          _ => {
+                            self.error(
+                              self.peek(),
+                              "Expected ',' or ')' in tuple type.",
+                            )
+                            break
+                          }
+                        }
+                      }
+                      _ => {
+                        self.error(
+                          self.peek(),
+                          "Expected type name in tuple type.",
+                        )
+                        break
+                      }
+                    }
+                  }
+                  match self.peek().kind {
+                    TokenKind::RParen => {
+                      let _ = self.advance() // consume RParen
+                      // Use first type token as placeholder for tuple type
+                      return_type = Some(first_type)
+                    }
+                    _ =>
+                      self.error(
+                        self.peek(),
+                        "Expected ')' to close tuple type.",
+                      )
+                  }
+                }
                 TokenKind::RParen => {
+                  // Single type in parens - could be function type (Type) -> Type
                   let _ = self.advance() // consume RParen
                   match self.peek().kind {
                     TokenKind::Arrow | TokenKind::ThinArrow => {
@@ -1365,7 +1469,7 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                 _ =>
                   self.error(
                     self.peek(),
-                    "Expected ')' after function parameter type.",
+                    "Expected ',' or ')' after type in return type.",
                   )
               }
             }
@@ -1406,9 +1510,59 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
               }
             }
             TokenKind::Ident => {
-              let _ = self.advance() // consume param type
+              let first_type = self.advance() // consume first type
               match self.peek().kind {
+                TokenKind::Comma => {
+                  // Tuple type: (Type, Type, ...)
+                  let _ = self.advance() // consume comma
+                  // Parse remaining types
+                  for {
+                    if self.is_at_end() {
+                      break
+                    }
+                    match self.peek().kind {
+                      TokenKind::RParen => break
+                      TokenKind::Ident => {
+                        let _ = self.advance() // consume type
+                        match self.peek().kind {
+                          TokenKind::Comma => {
+                            let _ = self.advance()
+                            // consume comma
+                          }
+                          TokenKind::RParen => break
+                          _ => {
+                            self.error(
+                              self.peek(),
+                              "Expected ',' or ')' in tuple type.",
+                            )
+                            break
+                          }
+                        }
+                      }
+                      _ => {
+                        self.error(
+                          self.peek(),
+                          "Expected type name in tuple type.",
+                        )
+                        break
+                      }
+                    }
+                  }
+                  match self.peek().kind {
+                    TokenKind::RParen => {
+                      let _ = self.advance() // consume RParen
+                      // Use first type token as placeholder for tuple type
+                      return_type = Some(first_type)
+                    }
+                    _ =>
+                      self.error(
+                        self.peek(),
+                        "Expected ')' to close tuple type.",
+                      )
+                  }
+                }
                 TokenKind::RParen => {
+                  // Single type in parens - could be function type (Type) -> Type
                   let _ = self.advance() // consume RParen
                   match self.peek().kind {
                     TokenKind::Arrow | TokenKind::ThinArrow => {
@@ -1432,7 +1586,7 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                 _ =>
                   self.error(
                     self.peek(),
-                    "Expected ')' after function parameter type.",
+                    "Expected ',' or ')' after type in return type.",
                   )
               }
             }
@@ -1582,6 +1736,7 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
   )
   let info : FunctionStmt = {
     fn_keyword,
+    generic_params,
     name,
     open_paren,
     parameters,
@@ -2247,6 +2402,11 @@ fn Parser::parse_match_expression(self : Parser) -> Expr? {
         let separator = self.peek()
         match separator.kind {
           TokenKind::Comma => {
+            let _ = self.advance()
+
+          }
+          TokenKind::Semicolon => {
+            // Skip semicolon after match arm (MoonBit allows semicolons)
             let _ = self.advance()
 
           }
@@ -3204,5 +3364,171 @@ fn Parser::parse_struct_definition(self : Parser) -> Stmt? {
     range,
   }
   let stmt : Stmt = { kind: StmtKind::Struct(struct_def), range }
+  Some(stmt)
+}
+
+///|
+fn Parser::parse_enum_definition(self : Parser) -> Stmt? {
+  let keyword = self.advance()
+  let name = match self.peek().kind {
+    TokenKind::Ident => self.advance()
+    _ => {
+      self.error(self.peek(), "Expected enum name after 'enum'.")
+      return None
+    }
+  }
+  let open_brace = match self.peek().kind {
+    TokenKind::LBrace => self.advance()
+    _ => {
+      self.error(self.peek(), "Expected '{' after enum name.")
+      return None
+    }
+  }
+  let variants : Array[EnumVariant] = Array::new()
+  while !self.is_at_end() {
+    match self.peek().kind {
+      TokenKind::RBrace => break
+      TokenKind::Semicolon => {
+        // Skip standalone semicolons
+        let _ = self.advance()
+
+      }
+      _ => {
+        // Parse variant: name; or name(Type, Type, ...)
+        let variant_name = match self.peek().kind {
+          TokenKind::Ident => self.advance()
+          _ => {
+            self.error(self.peek(), "Expected variant name in enum definition.")
+            return None
+          }
+        }
+        match self.peek().kind {
+          TokenKind::LParen => {
+            // Variant with parameters: name(Type, Type, ...)
+            let open_paren = self.advance()
+            let param_types : Array[Token] = Array::new()
+            // Parse first type (no leading comma)
+            match self.peek().kind {
+              TokenKind::Ident => {
+                let type_token = self.advance()
+                param_types.push(type_token)
+              }
+              TokenKind::RParen => () // Empty parameter list
+              _ => {
+                self.error(
+                  self.peek(),
+                  "Expected type name or ')' in variant parameters.",
+                )
+                return None
+              }
+            }
+            // Parse remaining types (with leading comma)
+            while !self.is_at_end() {
+              match self.peek().kind {
+                TokenKind::RParen => break
+                TokenKind::Comma => {
+                  let _ = self.advance()
+                  match self.peek().kind {
+                    TokenKind::Ident => {
+                      let type_token = self.advance()
+                      param_types.push(type_token)
+                    }
+                    _ => {
+                      self.error(
+                        self.peek(),
+                        "Expected type name after ',' in variant parameters.",
+                      )
+                      return None
+                    }
+                  }
+                }
+                _ => {
+                  self.error(
+                    self.peek(),
+                    "Expected ',' or ')' in variant parameters.",
+                  )
+                  return None
+                }
+              }
+            }
+            let close_paren = match self.peek().kind {
+              TokenKind::RParen => self.advance()
+              _ => {
+                self.error(
+                  self.peek(),
+                  "Expected ')' after variant parameters.",
+                )
+                return None
+              }
+            }
+            // Optional semicolon (last variant may not have it)
+            let semicolon = match self.peek().kind {
+              TokenKind::Semicolon => self.advance()
+              _ =>
+                // Create a dummy semicolon token for consistency
+                {
+                  kind: TokenKind::Semicolon,
+                  range: close_paren.range,
+                  lexeme: ";",
+                }
+            }
+            let variant_range = combine_ranges(
+              variant_name.range,
+              semicolon.range,
+            )
+            let variant : EnumVariant = {
+              name: variant_name,
+              open_paren: Some(open_paren),
+              param_types,
+              close_paren: Some(close_paren),
+              semicolon,
+              range: variant_range,
+            }
+            variants.push(variant)
+          }
+          _ => {
+            // Variant without parameters: name;
+            let semicolon = match self.peek().kind {
+              TokenKind::Semicolon => self.advance()
+              _ => {
+                self.error(self.peek(), "Expected ';' after variant name.")
+                return None
+              }
+            }
+            let variant_range = combine_ranges(
+              variant_name.range,
+              semicolon.range,
+            )
+            let variant : EnumVariant = {
+              name: variant_name,
+              open_paren: None,
+              param_types: Array::new(),
+              close_paren: None,
+              semicolon,
+              range: variant_range,
+            }
+            variants.push(variant)
+          }
+        }
+      }
+    }
+  }
+  let close_brace = match self.peek().kind {
+    TokenKind::RBrace => self.advance()
+    _ => {
+      self.error(self.peek(), "Expected '}' to close enum definition.")
+      return None
+    }
+  }
+  let range = combine_ranges(keyword.range, close_brace.range)
+  let enum_def : EnumDef = {
+    keyword,
+    name,
+    open_brace,
+    variants,
+    close_brace,
+    range,
+  }
+  let stmt : Stmt = { kind: StmtKind::Enum(enum_def), range }
   Some(stmt)
 }

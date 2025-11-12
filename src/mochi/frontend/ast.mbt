@@ -271,6 +271,7 @@ pub struct FunctionParam {
 ///|
 pub struct FunctionStmt {
   fn_keyword : Token
+  generic_params : Array[Token] // Generic type parameters like [T]
   name : Token
   open_paren : Token?
   parameters : Array[FunctionParam]
@@ -335,6 +336,26 @@ pub struct StructDef {
 }
 
 ///|
+pub struct EnumVariant {
+  name : Token
+  open_paren : Token?
+  param_types : Array[Token]
+  close_paren : Token?
+  semicolon : Token
+  range : SourceRange
+}
+
+///|
+pub struct EnumDef {
+  keyword : Token
+  name : Token
+  open_brace : Token
+  variants : Array[EnumVariant]
+  close_brace : Token
+  range : SourceRange
+}
+
+///|
 pub enum StmtKind {
   ExprStmt(Expr)
   Guard(GuardStmt)
@@ -346,6 +367,7 @@ pub enum StmtKind {
   While(WhileStmt)
   If(IfStmt)
   Struct(StructDef)
+  Enum(EnumDef)
 }
 
 ///|

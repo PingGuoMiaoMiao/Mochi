@@ -248,6 +248,8 @@ fn token_kind_name(kind : TokenKind) -> String {
     TokenKind::KeywordFn => "KeywordFn"
     TokenKind::KeywordReturn => "KeywordReturn"
     TokenKind::KeywordWhile => "KeywordWhile"
+    TokenKind::KeywordStruct => "KeywordStruct"
+    TokenKind::KeywordEnum => "KeywordEnum"
     TokenKind::LiteralBool => "LiteralBool"
     TokenKind::LiteralInt => "LiteralInt"
     TokenKind::LiteralString => "LiteralString"
