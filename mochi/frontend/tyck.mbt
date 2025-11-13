@@ -731,8 +731,7 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
           StmtKind::Function(nested_function_stmt) => {
             // Type check nested function body
             let previous_return_type = self.current_return_type
-            let nested_expected_return_type = match
-              nested_function_stmt.return_type {
+            let nested_expected_return_type = match nested_function_stmt.return_type {
               Some(token) =>
                 if token.lexeme == "Array" {
                   Type::array_type(Type::array_type(Type::double()))
