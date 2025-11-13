@@ -710,13 +710,13 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> (String, String) {
       let name = token.lexeme
       // 检查是否是特殊的运行时函数
       match name {
-        "print_int" => ("@print_int", "void", true, "i32")
+        "print_int" => ("@minimbt_print_int", "void", true, "i32")
         "print_double" => ("@print_double", "void", true, "double")
-        "print_endline" => ("@print_endline", "void", true, "")
-        "truncate" => ("@truncate", "i32", false, "double")
-        "int_of_float" => ("@int_of_float", "i32", false, "double")
-        "float_of_int" => ("@float_of_int", "double", false, "i32")
-        "abs_float" => ("@abs_float", "double", false, "double")
+        "print_endline" => ("@minimbt_print_endline", "void", true, "")
+        "truncate" => ("@minimbt_truncate", "i32", false, "double")
+        "int_of_float" => ("@minimbt_int_of_float", "i32", false, "double")
+        "float_of_int" => ("@minimbt_float_of_int", "double", false, "i32")
+        "abs_float" => ("@minimbt_abs_float", "double", false, "double")
         _ =>
           // 普通函数调用，默认所有参数都是 i32，返回值是 i32
           // 参数类型需要根据实际参数数量生成
