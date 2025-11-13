@@ -1,5 +1,6 @@
 ///|
 fn read_emit_format() -> @frontend.EmitFormat {
+  // Try to read minimoonbit.json, but it's optional
   let content_opt : String? = Some(@fs.read_file_to_string("minimoonbit.json")) catch {
     IOError(_) => None
   }
@@ -18,8 +19,8 @@ fn read_emit_format() -> @frontend.EmitFormat {
 ///|
 fn read_source_or_exit(path : String) -> String {
   @fs.read_file_to_string(path) catch {
-    IOError(message) => {
-      println("Failed to read file: " + message)
+    IOError(_) => {
+      println("Error: no such file")
       @sys.exit(1)
       ""
     }
@@ -97,22 +98,40 @@ fn print_usage(message : String?) -> Unit {
     None => ()
   }
   println("Usage:")
-  println("  moon run src/bin/main.mbt -- --typecheck <input.mbt>")
-  println("  moon run src/bin/main.mbt -- <input.mbt> -o <output_file>")
+  println("  moon run bin/main.mbt -- --typecheck <input.mbt>")
+  println("  moon run bin/main.mbt -- <input.mbt> -o <output_file>")
   @sys.exit(1)
 }
 
 ///|
 fn main {
   let args = @sys.get_cli_args()
-  if args.length() < 2 {
+  if args.length() == 0 {
     print_usage(None)
   }
-  if args[1] == "--typecheck" {
-    if args.length() < 3 {
+  // Skip the first argument if it's the program name (ends with .wasm or is an executable path)
+  let mut start_index = 0
+  if args.length() > 0 {
+    let first_arg = args[0]
+    // Check if first argument looks like a program name (ends with .wasm, .exe, or contains /bin/ or bin.wasm)
+    if first_arg.has_suffix(".wasm") ||
+      first_arg.has_suffix(".exe") ||
+      first_arg.contains("/bin/") ||
+      first_arg.contains("\\bin\\") ||
+      first_arg.contains("bin.wasm") {
+      start_index = 1
+    }
+  }
+  // Adjust start_index if we have no real arguments left
+  if start_index >= args.length() {
+    print_usage(None)
+  }
+  // Handle --typecheck mode
+  if args[start_index] == "--typecheck" {
+    if start_index + 1 >= args.length() {
       print_usage(Some("Missing input file for --typecheck."))
     }
-    let input_file = args[2]
+    let input_file = args[start_index + 1]
     let source = read_source_or_exit(input_file)
     match run_frontend_pipeline(source) {
       Some(_) => ()
@@ -120,9 +139,13 @@ fn main {
     }
     return
   }
-  let mut index = 1
-  if args[1] == "--compile" {
-    index = 2
+  // Handle compilation mode
+  let mut index = start_index
+  if args[start_index] == "--compile" {
+    if start_index + 1 >= args.length() {
+      print_usage(Some("Missing input file for compilation."))
+    }
+    index = start_index + 1
   }
   if index >= args.length() {
     print_usage(Some("Missing input file for compilation."))

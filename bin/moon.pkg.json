@@ -3,7 +3,7 @@
   "import": [
     
     {
-      "path": "PingGuoMiaoMiao/Mochi/src/mochi/frontend",
+      "path": "PingGuoMiaoMiao/Mochi/mochi/frontend",
       "alias": "frontend"
     },
     {

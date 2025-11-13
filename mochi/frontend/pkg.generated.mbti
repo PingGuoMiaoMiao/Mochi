@@ -1,5 +1,5 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "PingGuoMiaoMiao/Mochi/src/mochi/frontend"
+package "PingGuoMiaoMiao/Mochi/mochi/frontend"
 
 // Values
 fn analyze(Array[Stmt]) -> TyckResult
