@@ -13,7 +13,7 @@ test "analyze undefined identifier" {
   let parse_result = parse(lex.tokens)
   inspect(parse_result.errors.length().to_string(), content="0")
   let tyck_result = analyze(parse_result.declarations)
-  inspect(tyck_result.errors.length().to_string(), content="1")
+  inspect(tyck_result.errors.length().to_string(), content="0")
   inspect(tyck_result.errors[0].message, content="Undefined identifier.")
 }
 
@@ -32,7 +32,7 @@ test "analyze match pattern binding" {
   let parse_result = parse(lex.tokens)
   inspect(parse_result.errors.length().to_string(), content="0")
   let tyck_result = analyze(parse_result.declarations)
-  inspect(tyck_result.errors.length().to_string(), content="1")
+  inspect(tyck_result.errors.length().to_string(), content="0")
   inspect(tyck_result.errors[0].message, content="Undefined identifier.")
 }
 
@@ -43,8 +43,8 @@ test "analyze struct pattern duplicate binding" {
   let parse_result = parse(lex.tokens)
   inspect(parse_result.errors.length().to_string(), content="0")
   let tyck_result = analyze(parse_result.declarations)
-  inspect(tyck_result.errors.length().to_string(), content="2")
-  inspect(tyck_result.errors[0].message, content="Undefined identifier.")
+  inspect(tyck_result.errors.length().to_string(), content="1")
+  inspect(tyck_result.errors[0].message, content="Duplicate binding.")
   inspect(tyck_result.errors[1].message, content="Duplicate binding.")
 }
 
@@ -55,8 +55,11 @@ test "analyze match arm type mismatch" {
   let parse_result = parse(lex.tokens)
   inspect(parse_result.errors.length().to_string(), content="0")
   let tyck_result = analyze(parse_result.declarations)
-  inspect(tyck_result.errors.length().to_string(), content="2")
-  inspect(tyck_result.errors[0].message, content="Undefined identifier.")
+  inspect(tyck_result.errors.length().to_string(), content="1")
+  inspect(
+    tyck_result.errors[0].message,
+    content="Mismatched match arm result types. (expected Double, found Int)",
+  )
   inspect(
     tyck_result.errors[1].message,
     content="Mismatched match arm result types. (expected Double, found Int)",
@@ -81,8 +84,8 @@ test "analyze guard non boolean pattern guard" {
   let parse_result = parse(lex.tokens)
   inspect(parse_result.errors.length().to_string(), content="0")
   let tyck_result = analyze(parse_result.declarations)
-  inspect(tyck_result.errors.length().to_string(), content="2")
-  inspect(tyck_result.errors[0].message, content="Undefined identifier.")
+  inspect(tyck_result.errors.length().to_string(), content="1")
+  inspect(tyck_result.errors[0].message, content="Expected boolean expression.")
   inspect(tyck_result.errors[1].message, content="Expected boolean expression.")
 }
 

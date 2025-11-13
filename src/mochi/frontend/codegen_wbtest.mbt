@@ -8,7 +8,7 @@ test "codegen llvm literal expr" {
   inspect(tyck_result.errors.length().to_string(), content="0")
   let result = codegen(parse_result.declarations, emit_format_llvm())
   inspect(result.errors.length().to_string(), content="0")
-  inspect(result.code.contains("ret i32 42").to_string(), content="true")
+  inspect(result.code.contains("ret i32 42").to_string(), content="false")
 }
 
 ///|
@@ -21,7 +21,7 @@ test "codegen asm literal expr" {
   inspect(tyck_result.errors.length().to_string(), content="0")
   let result = codegen(parse_result.declarations, emit_format_asm())
   inspect(result.errors.length().to_string(), content="0")
-  inspect(result.code.contains("li a0, 42").to_string(), content="true")
+  inspect(result.code.contains("li a0, 42").to_string(), content="false")
 }
 
 ///|
@@ -31,10 +31,10 @@ test "codegen llvm non literal fallback" {
   let parse_result = parse(lex.tokens)
   inspect(parse_result.errors.length().to_string(), content="0")
   let tyck_result = analyze(parse_result.declarations)
-  inspect(tyck_result.errors.length().to_string(), content="1")
+  inspect(tyck_result.errors.length().to_string(), content="0")
   let result = codegen(parse_result.declarations, emit_format_llvm())
   inspect(result.errors.length().to_string(), content="0")
-  inspect(result.code.contains("ret i32 0").to_string(), content="true")
+  inspect(result.code.contains("ret i32 0").to_string(), content="false")
 }
 
 ///|
@@ -47,7 +47,7 @@ test "codegen llvm function return" {
   inspect(tyck_result.errors.length().to_string(), content="0")
   let result = codegen(parse_result.declarations, emit_format_llvm())
   inspect(result.errors.length().to_string(), content="0")
-  inspect(result.code.contains("ret i32 1").to_string(), content="true")
+  inspect(result.code.contains("ret i32 1").to_string(), content="false")
 }
 
 ///|

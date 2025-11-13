@@ -1115,7 +1115,7 @@ test "match enum pattern missing variant" {
   for err in result.errors {
     messages.push(err.message)
   }
-  inspect(messages.join("|"), content="Expected identifier after '::'.")
+  inspect(messages.join("|"), content="Expected identifier or '{' after '::'.")
 }
 
 ///|
