@@ -266,6 +266,11 @@ pub struct FunctionParam {
   colon : Token?
   type_name : Token?
   element_type_name : Token? // For Array[Type], stores the element type token
+  is_function_type : Bool
+  function_param_types : Array[Token]
+  function_return_type : Token?
+  is_tuple_type : Bool
+  tuple_element_types : Array[Token]
 }
 
 ///|
@@ -280,6 +285,9 @@ pub struct FunctionStmt {
   return_type : Token?
   return_type_is_function : Bool
   function_return_param_types : Array[Token]
+  return_type_is_tuple : Bool
+  return_tuple_element_types : Array[Token]
+  return_type_array_generics : Array[Token]
   open_brace : Token
   body : Array[Stmt]
   close_brace : Token

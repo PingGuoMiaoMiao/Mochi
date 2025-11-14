@@ -32,6 +32,118 @@ pub struct CodegenResult {
 }
 
 ///|
+priv struct BuiltinFuncInfo {
+  ir_name : String
+  return_type : String
+  is_void : Bool
+  param_types : Array[String]
+}
+
+///|
+fn builtin_param_types_none() -> Array[String] {
+  Array::new()
+}
+
+///|
+fn builtin_param_types_one(type0 : String) -> Array[String] {
+  let params : Array[String] = Array::new()
+  params.push(type0)
+  params
+}
+
+///|
+fn builtin_param_types_two(type0 : String, type1 : String) -> Array[String] {
+  let params : Array[String] = Array::new()
+  params.push(type0)
+  params.push(type1)
+  params
+}
+
+///|
+fn get_builtin_function(name : String) -> BuiltinFuncInfo? {
+  match name {
+    "print_int" =>
+      Some({
+        ir_name: "@print_int",
+        return_type: "void",
+        is_void: true,
+        param_types: builtin_param_types_one("i32"),
+      })
+    "print_double" =>
+      Some({
+        ir_name: "@print_double",
+        return_type: "void",
+        is_void: true,
+        param_types: builtin_param_types_one("double"),
+      })
+    "print_endline" =>
+      Some({
+        ir_name: "@print_endline",
+        return_type: "void",
+        is_void: true,
+        param_types: builtin_param_types_none(),
+      })
+    "int_of_float" =>
+      Some({
+        ir_name: "@int_of_float",
+        return_type: "i32",
+        is_void: false,
+        param_types: builtin_param_types_one("double"),
+      })
+    "float_of_int" =>
+      Some({
+        ir_name: "@float_of_int",
+        return_type: "double",
+        is_void: false,
+        param_types: builtin_param_types_one("i32"),
+      })
+    "truncate" =>
+      Some({
+        ir_name: "@truncate",
+        return_type: "i32",
+        is_void: false,
+        param_types: builtin_param_types_one("double"),
+      })
+    "abs_float" =>
+      Some({
+        ir_name: "@abs_float",
+        return_type: "double",
+        is_void: false,
+        param_types: builtin_param_types_one("double"),
+      })
+    _ => None
+  }
+}
+
+///|
+fn builtin_function_names() -> Array[String] {
+  let names : Array[String] = Array::new()
+  names.push("print_int")
+  names.push("print_double")
+  names.push("print_endline")
+  names.push("int_of_float")
+  names.push("float_of_int")
+  names.push("truncate")
+  names.push("abs_float")
+  names
+}
+
+///|
+fn format_builtin_declaration(info : BuiltinFuncInfo) -> String {
+  let mut decl = "declare " + info.return_type + " " + info.ir_name + "("
+  let mut first = true
+  for param_type in info.param_types {
+    if first {
+      decl = decl + param_type
+      first = false
+    } else {
+      decl = decl + ", " + param_type
+    }
+  }
+  decl + ")\n"
+}
+
+///|
 pub fn codegen(statements : Array[Stmt], format : EmitFormat) -> CodegenResult {
   let errors : Array[String] = Array::new()
   match format {
@@ -163,8 +275,490 @@ fn LLVMGen::next_label(self : LLVMGen) -> String {
 
 ///|
 // 生成LLVM IR代码的主函数
+fn function_id(function_stmt : FunctionStmt) -> Int {
+  function_stmt.range.start.index
+}
+
+///|
+fn clone_string_array(source : Array[String]) -> Array[String] {
+  let result : Array[String] = Array::new()
+  for item in source {
+    result.push(item)
+  }
+  result
+}
+
+///|
+fn scope_contains(scope : Array[String], name : String) -> Bool {
+  for entry in scope {
+    if entry == name {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn add_name_to_scope(scope : Array[String], name : String) -> Unit {
+  if name == "" {
+    return
+  }
+  if !scope_contains(scope, name) {
+    scope.push(name)
+  }
+}
+
+///|
+fn merge_scopes(
+  scope_a : Array[String],
+  scope_b : Array[String],
+) -> Array[String] {
+  let merged = clone_string_array(scope_a)
+  for entry in scope_b {
+    add_name_to_scope(merged, entry)
+  }
+  merged
+}
+
+///|
+fn record_free_var(free_vars : Array[String], name : String) -> Unit {
+  if name == "" {
+    return
+  }
+  if !scope_contains(free_vars, name) {
+    free_vars.push(name)
+  }
+}
+
+///|
+priv struct ClosureEntry {
+  id : Int
+  free_vars : Array[String]
+}
+
+///|
+priv struct ClosureMetadata {
+  entries : Array[ClosureEntry]
+}
+
+///|
+fn ClosureMetadata::new() -> ClosureMetadata {
+  { entries: Array::new() }
+}
+
+///|
+fn ClosureMetadata::record(
+  self : ClosureMetadata,
+  id : Int,
+  free_vars : Array[String],
+) -> Unit {
+  self.entries.push({ id, free_vars })
+}
+
+///|
+fn ClosureMetadata::get_free_vars(
+  self : ClosureMetadata,
+  function_stmt : FunctionStmt,
+) -> Array[String] {
+  let id = function_id(function_stmt)
+  for entry in self.entries {
+    if entry.id == id {
+      return clone_string_array(entry.free_vars)
+    }
+  }
+  Array::new()
+}
+
+///|
+fn gather_global_scope(statements : Array[Stmt]) -> Array[String] {
+  let scope = builtin_function_names()
+  for stmt in statements {
+    match stmt.kind {
+      StmtKind::Function(function_stmt) =>
+        add_name_to_scope(scope, function_stmt.name.lexeme)
+      StmtKind::Let(let_stmt) => add_name_to_scope(scope, let_stmt.name.lexeme)
+      _ => ()
+    }
+  }
+  scope
+}
+
+///|
+fn analyze_closures(statements : Array[Stmt]) -> ClosureMetadata {
+  let metadata = ClosureMetadata::new()
+  let global_scope = gather_global_scope(statements)
+  for stmt in statements {
+    match stmt.kind {
+      StmtKind::Function(function_stmt) =>
+        analyze_function_closure(function_stmt, global_scope, metadata)
+      _ => ()
+    }
+  }
+  metadata
+}
+
+///|
+fn analyze_function_closure(
+  function_stmt : FunctionStmt,
+  parent_scope : Array[String],
+  metadata : ClosureMetadata,
+) -> Unit {
+  let free_vars = compute_function_free_vars(
+    function_stmt, parent_scope, metadata,
+  )
+  metadata.record(function_id(function_stmt), free_vars)
+}
+
+///|
+fn init_function_scope(function_stmt : FunctionStmt) -> Array[String] {
+  let local_scope : Array[String] = Array::new()
+  add_name_to_scope(local_scope, function_stmt.name.lexeme)
+  for param in function_stmt.parameters {
+    add_name_to_scope(local_scope, param.name.lexeme)
+  }
+  local_scope
+}
+
+///|
+fn compute_function_free_vars(
+  function_stmt : FunctionStmt,
+  parent_scope : Array[String],
+  metadata : ClosureMetadata,
+) -> Array[String] {
+  let free_vars : Array[String] = Array::new()
+  let local_scope = init_function_scope(function_stmt)
+  collect_free_vars_in_statements(
+    function_stmt.body,
+    parent_scope,
+    local_scope,
+    free_vars,
+    metadata,
+  )
+  free_vars
+}
+
+///|
+fn collect_free_vars_in_statements(
+  statements : Array[Stmt],
+  parent_scope : Array[String],
+  local_scope : Array[String],
+  free_vars : Array[String],
+  metadata : ClosureMetadata,
+) -> Unit {
+  for stmt in statements {
+    collect_free_vars_in_stmt(
+      stmt, parent_scope, local_scope, free_vars, metadata,
+    )
+  }
+}
+
+///|
+fn collect_free_vars_in_stmt(
+  stmt : Stmt,
+  parent_scope : Array[String],
+  local_scope : Array[String],
+  free_vars : Array[String],
+  metadata : ClosureMetadata,
+) -> Unit {
+  match stmt.kind {
+    StmtKind::ExprStmt(expr) =>
+      collect_free_vars_in_expr(expr, parent_scope, local_scope, free_vars)
+    StmtKind::Let(let_stmt) => {
+      collect_free_vars_in_expr(
+        let_stmt.value,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+      add_name_to_scope(local_scope, let_stmt.name.lexeme)
+    }
+    StmtKind::Assign(assign_stmt) => {
+      collect_free_vars_in_expr(
+        assign_stmt.target,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+      collect_free_vars_in_expr(
+        assign_stmt.value,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+    }
+    StmtKind::Return(return_stmt) =>
+      match return_stmt.value {
+        Some(value) =>
+          collect_free_vars_in_expr(value, parent_scope, local_scope, free_vars)
+        None => ()
+      }
+    StmtKind::While(while_stmt) => {
+      collect_free_vars_in_expr(
+        while_stmt.condition,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+      let body_scope = clone_string_array(local_scope)
+      collect_free_vars_in_statements(
+        while_stmt.body,
+        parent_scope,
+        body_scope,
+        free_vars,
+        metadata,
+      )
+    }
+    StmtKind::If(if_stmt) => {
+      collect_free_vars_in_expr(
+        if_stmt.condition,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+      let then_scope = clone_string_array(local_scope)
+      collect_free_vars_in_statements(
+        if_stmt.then_body,
+        parent_scope,
+        then_scope,
+        free_vars,
+        metadata,
+      )
+      if if_stmt.else_body.length() > 0 {
+        let else_scope = clone_string_array(local_scope)
+        collect_free_vars_in_statements(
+          if_stmt.else_body,
+          parent_scope,
+          else_scope,
+          free_vars,
+          metadata,
+        )
+      }
+    }
+    StmtKind::Function(function_stmt) => {
+      let nested_parent_scope = merge_scopes(parent_scope, local_scope)
+      analyze_function_closure(function_stmt, nested_parent_scope, metadata)
+      add_name_to_scope(local_scope, function_stmt.name.lexeme)
+    }
+    StmtKind::Guard(guard_stmt) => {
+      collect_free_vars_in_expr(
+        guard_stmt.condition,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+      match guard_stmt.pattern {
+        Some(pattern) => {
+          let pattern_scope = clone_string_array(local_scope)
+          collect_pattern_bindings(pattern, pattern_scope)
+          match guard_stmt.else_clause {
+            Some(clause) =>
+              match clause.body {
+                Some(body_expr) =>
+                  collect_free_vars_in_expr(
+                    body_expr, parent_scope, pattern_scope, free_vars,
+                  )
+                None => ()
+              }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    }
+    StmtKind::Switch(switch_stmt) => {
+      collect_free_vars_in_expr(
+        switch_stmt.value,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+      for case in switch_stmt.cases {
+        let case_scope = clone_string_array(local_scope)
+        collect_pattern_bindings(case.pattern, case_scope)
+        collect_free_vars_in_expr(
+          case.value,
+          parent_scope,
+          case_scope,
+          free_vars,
+        )
+      }
+      match switch_stmt.default_case {
+        Some(default_case) =>
+          collect_free_vars_in_expr(
+            default_case.value,
+            parent_scope,
+            local_scope,
+            free_vars,
+          )
+        None => ()
+      }
+    }
+    StmtKind::Struct(_) | StmtKind::Enum(_) => ()
+  }
+}
+
+///|
+fn collect_pattern_bindings(pattern : Pattern, scope : Array[String]) -> Unit {
+  match pattern.kind {
+    PatternKind::Ident(token) => add_name_to_scope(scope, token.lexeme)
+    PatternKind::Tuple(tuple_pattern) =>
+      for element in tuple_pattern.elements {
+        collect_pattern_bindings(element, scope)
+      }
+    PatternKind::Struct(struct_pattern) =>
+      for field in struct_pattern.fields {
+        match field.pattern {
+          Some(sub_pattern) => collect_pattern_bindings(sub_pattern, scope)
+          None => add_name_to_scope(scope, field.name.lexeme)
+        }
+      }
+    PatternKind::EnumVariant(enum_pattern) =>
+      for argument in enum_pattern.arguments {
+        collect_pattern_bindings(argument, scope)
+      }
+    PatternKind::Or(or_pattern) =>
+      for sub_pattern in or_pattern.patterns {
+        collect_pattern_bindings(sub_pattern, scope)
+      }
+    PatternKind::Wildcard(_) | PatternKind::Literal(_) => ()
+  }
+}
+
+///|
+fn collect_free_vars_in_expr(
+  expr : Expr,
+  parent_scope : Array[String],
+  local_scope : Array[String],
+  free_vars : Array[String],
+) -> Unit {
+  match expr.kind {
+    ExprKind::Ident(token) => {
+      let name = token.lexeme
+      if !scope_contains(local_scope, name) &&
+        scope_contains(parent_scope, name) {
+        record_free_var(free_vars, name)
+      }
+    }
+    ExprKind::Binary(binary_expr) => {
+      collect_free_vars_in_expr(
+        binary_expr.left,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+      collect_free_vars_in_expr(
+        binary_expr.right,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+    }
+    ExprKind::Unary(unary_expr) =>
+      collect_free_vars_in_expr(
+        unary_expr.operand,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+    ExprKind::Call(call_expr) => {
+      collect_free_vars_in_expr(
+        call_expr.callee,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+      for argument in call_expr.arguments {
+        collect_free_vars_in_expr(
+          argument, parent_scope, local_scope, free_vars,
+        )
+      }
+    }
+    ExprKind::ArrayLiteral(array_lit) =>
+      for element in array_lit.elements {
+        collect_free_vars_in_expr(element, parent_scope, local_scope, free_vars)
+      }
+    ExprKind::Index(index_expr) => {
+      collect_free_vars_in_expr(
+        index_expr.array,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+      collect_free_vars_in_expr(
+        index_expr.index,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+    }
+    ExprKind::TupleLiteral(tuple_lit) =>
+      for element in tuple_lit.elements {
+        collect_free_vars_in_expr(element, parent_scope, local_scope, free_vars)
+      }
+    ExprKind::If(if_expr) => {
+      collect_free_vars_in_expr(
+        if_expr.condition,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+      collect_free_vars_in_expr(
+        if_expr.then_expr,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+      collect_free_vars_in_expr(
+        if_expr.else_expr,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+    }
+    ExprKind::FieldAccess(field_access) =>
+      collect_free_vars_in_expr(
+        field_access.object,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+    ExprKind::StructLiteral(struct_lit) =>
+      for field in struct_lit.fields {
+        collect_free_vars_in_expr(
+          field.value,
+          parent_scope,
+          local_scope,
+          free_vars,
+        )
+      }
+    ExprKind::Match(match_expr) => {
+      collect_free_vars_in_expr(
+        match_expr.value,
+        parent_scope,
+        local_scope,
+        free_vars,
+      )
+      for arm in match_expr.arms {
+        let arm_scope = clone_string_array(local_scope)
+        collect_pattern_bindings(arm.pattern, arm_scope)
+        match arm.guard_expr {
+          Some(guard_expr) =>
+            collect_free_vars_in_expr(
+              guard_expr, parent_scope, arm_scope, free_vars,
+            )
+          None => ()
+        }
+        collect_free_vars_in_expr(arm.value, parent_scope, arm_scope, free_vars)
+      }
+    }
+    ExprKind::Literal(_) => ()
+  }
+}
+
+///|
 fn generate_llvm(statements : Array[Stmt]) -> String {
   let mut output = "target triple = \"riscv64-unknown-linux-gnu\"\n\n"
+  let closure_metadata = analyze_closures(statements)
 
   // 生成外部函数声明
   output = output + generate_external_declarations()
@@ -208,7 +802,9 @@ fn generate_llvm(statements : Array[Stmt]) -> String {
         if function_stmt.name.lexeme == "main" {
           has_main_function = true
         }
-        let func_code = llvm_gen_function(struct_defs_map, function_stmt)
+        let func_code = llvm_gen_function(
+          struct_defs_map, function_stmt, closure_metadata,
+        )
         output = output + func_code
       }
       _ => {
@@ -220,9 +816,21 @@ fn generate_llvm(statements : Array[Stmt]) -> String {
 
   // 如果没有 main 函数，且 main_statements 不为空，生成一个 main 函数
   // 确保不会重复生成 main 函数
+  let mut emitted_minimbt_main = false
   if !has_main_function && has_main_statements && main_statements.length() > 0 {
     let main_code = llvm_gen_main_function(struct_defs_map, main_statements)
     output = output + main_code
+    emitted_minimbt_main = true
+  } else if has_main_function {
+    emitted_minimbt_main = true
+  }
+  if emitted_minimbt_main {
+    output = output +
+      "define i32 @main() {\n" +
+      "entry:\n" +
+      "  call void @minimbt_main()\n" +
+      "  ret i32 0\n" +
+      "}\n"
   }
   output
 }
@@ -231,56 +839,20 @@ fn generate_llvm(statements : Array[Stmt]) -> String {
 // 生成外部函数声明
 // 支持 riscv_rt 运行时库中的所有函数
 fn generate_external_declarations() -> String {
-  // 基本 I/O 函数（兼容旧版本）
-  "declare void @print_int(i32)\n" +
-  "declare void @print_double(double)\n" +
-  "declare void @print_endline()\n" +
-  "declare i32 @int_of_float(double)\n" +
-  "declare double @float_of_int(i32)\n" +
-  "declare i32 @truncate(double)\n" +
-  "declare double @abs_float(double)\n" +
-  "declare i8* @malloc(i32)\n" +
-  // minimbt 运行时库函数
-  "declare i32 @minimbt_read_int()\n" +
-  "declare i32 @minimbt_read_char()\n" +
-  "declare void @minimbt_print_int(i32)\n" +
-  "declare void @minimbt_print_endline()\n" +
-  "declare void @minimbt_print_char(i32)\n" +
-  "declare i32 @minimbt_int_of_float(double)\n" +
-  "declare double @minimbt_float_of_int(i32)\n" +
-  "declare i32 @minimbt_truncate(double)\n" +
-  "declare i32 @minimbt_floor(double)\n" +
-  "declare double @minimbt_abs_float(double)\n" +
-  "declare double @minimbt_sqrt(double)\n" +
-  "declare double @minimbt_sin(double)\n" +
-  "declare double @minimbt_cos(double)\n" +
-  "declare double @minimbt_atan(double)\n" +
-  "declare i8* @minimbt_malloc(i32)\n" +
-  // 数组创建函数
-  "declare i32* @minimbt_create_array(i32, i32)\n" +
-  "declare i8** @minimbt_create_ptr_array(i32, i8*)\n" +
-  "declare double* @minimbt_create_float_array(i32, double)\n" +
-  // 检查算术函数
-  "declare i32 @minimbt_checked_add(i32, i32)\n" +
-  "declare i32 @minimbt_checked_sub(i32, i32)\n" +
-  "declare i32 @minimbt_checked_mul(i32, i32)\n" +
-  "declare i32 @minimbt_checked_div(i32, i32)\n" +
-  // mincaml 兼容函数
-  "declare void @mincaml_print_int(i32)\n" +
-  "declare void @mincaml_print_endline()\n" +
-  "declare i32 @mincaml_int_of_float(double)\n" +
-  "declare double @mincaml_float_of_int(i32)\n" +
-  "declare i32 @mincaml_truncate(double)\n" +
-  "declare i32 @mincaml_floor(double)\n" +
-  "declare double @mincaml_abs_float(double)\n" +
-  "declare double @mincaml_sqrt(double)\n" +
-  "declare double @mincaml_sin(double)\n" +
-  "declare double @mincaml_cos(double)\n" +
-  "declare double @mincaml_atan(double)\n" +
-  "declare i8* @mincaml_malloc(i32)\n" +
-  "declare i32* @mincaml_create_array(i32, i32)\n" +
-  "declare i8** @mincaml_create_ptr_array(i32, i8*)\n" +
-  "declare double* @mincaml_create_float_array(i32, double)\n\n"
+  let mut declarations = ""
+  for name in builtin_function_names() {
+    match get_builtin_function(name) {
+      Some(info) =>
+        declarations = declarations + format_builtin_declaration(info)
+      None => ()
+    }
+  }
+  declarations = declarations +
+    "declare i32* @minimbt_create_array(i32, i32)\n" +
+    "declare i8** @minimbt_create_ptr_array(i32, i8*)\n" +
+    "declare double* @minimbt_create_float_array(i32, double)\n" +
+    "declare i8* @minimbt_malloc(i32)\n"
+  declarations + "\n"
 }
 
 ///|
@@ -603,6 +1175,7 @@ fn llvm_gen_binary_op(
     TokenKind::AmpAmp => {
       let cmp1_temp = gen.next_temp()
       let cmp2_temp = gen.next_temp()
+      let bool_temp = gen.next_temp()
       "  " +
       cmp1_temp +
       " = icmp ne i32 " +
@@ -612,16 +1185,21 @@ fn llvm_gen_binary_op(
       " = icmp ne i32 " +
       right_temp +
       ", 0\n  " +
-      result_temp +
-      " = and i32 " +
+      bool_temp +
+      " = and i1 " +
       cmp1_temp +
       ", " +
       cmp2_temp +
-      "\n"
+      "\n  " +
+      result_temp +
+      " = zext i1 " +
+      bool_temp +
+      " to i32\n"
     }
     TokenKind::PipePipe => {
       let cmp1_temp = gen.next_temp()
       let cmp2_temp = gen.next_temp()
+      let bool_temp = gen.next_temp()
       "  " +
       cmp1_temp +
       " = icmp ne i32 " +
@@ -631,12 +1209,16 @@ fn llvm_gen_binary_op(
       " = icmp ne i32 " +
       right_temp +
       ", 0\n  " +
-      result_temp +
-      " = or i32 " +
+      bool_temp +
+      " = or i1 " +
       cmp1_temp +
       ", " +
       cmp2_temp +
-      "\n"
+      "\n  " +
+      result_temp +
+      " = zext i1 " +
+      bool_temp +
+      " to i32\n"
     }
     _ => "  " + result_temp + " = add i32 0, 0\n"
   }
@@ -660,13 +1242,18 @@ fn llvm_gen_unary(gen : LLVMGen, unary_expr : UnaryExpr) -> (String, String) {
     }
     TokenKind::Bang => {
       let (operand_code, operand_temp) = llvm_gen_expr(gen, unary_expr.operand)
+      let cmp_temp = gen.next_temp()
       let temp = gen.next_temp()
       let code = operand_code +
         "  " +
-        temp +
-        " = xor i32 " +
+        cmp_temp +
+        " = icmp eq i32 " +
         operand_temp +
-        ", 1\n"
+        ", 0\n  " +
+        temp +
+        " = zext i1 " +
+        cmp_temp +
+        " to i32\n"
       (code, temp)
     }
     _ => {
@@ -689,77 +1276,43 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> (String, String) {
     args_temps.push(arg_temp)
   }
 
-  // 构建参数列表
-  let mut args_list = ""
-  let mut first = true
-  for arg_temp in args_temps {
-    if first {
-      args_list = arg_temp
-      first = false
-    } else {
-      args_list = args_list + ", " + arg_temp
-    }
-  }
-
   // 获取函数名和函数类型
   // 支持普通函数调用（Ident）和限定函数调用（FieldAccess，如 Array::make）
-  let (func_name, return_type, is_void, param_types) = match
-    call_expr.callee.kind {
+  let mut func_name = ""
+  let mut return_type = "i32"
+  let mut is_void = false
+  let mut builtin_param_types : Array[String]? = None
+  match call_expr.callee.kind {
     ExprKind::Ident(token) => {
-      // 普通函数调用：function_name(args)
       let name = token.lexeme
-      // 检查是否是特殊的运行时函数
-      match name {
-        "print_int" => ("@print_int", "void", true, "i32")
-        "print_double" => ("@print_double", "void", true, "double")
-        "print_endline" => ("@print_endline", "void", true, "")
-        "truncate" => ("@truncate", "i32", false, "double")
-        "int_of_float" => ("@int_of_float", "i32", false, "double")
-        "float_of_int" => ("@float_of_int", "double", false, "i32")
-        "abs_float" => ("@abs_float", "double", false, "double")
-        _ =>
-          // 普通函数调用，默认所有参数都是 i32，返回值是 i32
-          // 参数类型需要根据实际参数数量生成
-          ("@" + name, "i32", false, "i32")
+      match get_builtin_function(name) {
+        Some(info) => {
+          func_name = info.ir_name
+          return_type = info.return_type
+          is_void = info.is_void
+          builtin_param_types = Some(info.param_types)
+        }
+        None => func_name = "@" + name
       }
     }
     ExprKind::FieldAccess(field_access) => {
-      // 限定函数调用：Array::make(args)
-      // 检查是否是 Array::make
       let is_array_make = match field_access.object.kind {
         ExprKind::Ident(token) => token.lexeme == "Array"
         _ => false
       }
       if is_array_make && field_access.field.lexeme == "make" {
-        // Array::make(size, value)
-        // 根据参数类型决定使用哪个函数
-        // 如果第二个参数是 double，使用 minimbt_create_float_array
-        // 否则使用 minimbt_create_array
-        // 暂时假设所有 Array::make 都使用 minimbt_create_array（i32 数组）
-        // TODO: 根据类型检查结果确定使用哪个函数
-        if args_temps.length() == 2 {
-          // 检查第二个参数的类型（暂时假设是 i32，实际应该从类型检查器获取）
-          // 为了简化，我们暂时使用 minimbt_create_array
-          // 如果需要支持 double 数组，需要类型信息
-          ("@minimbt_create_array", "i32*", false, "i32, i32")
-        } else {
-          ("@minimbt_create_array", "i32*", false, "i32, i32")
-        }
+        func_name = "@minimbt_create_array"
+        return_type = "i32*"
+        builtin_param_types = Some(builtin_param_types_two("i32", "i32"))
       } else {
-        // 其他限定函数调用：尝试作为普通函数调用处理
-        // 例如：Module::function -> @Module_function
         let module_name = match field_access.object.kind {
           ExprKind::Ident(token) => token.lexeme
           _ => ""
         }
-        let func_name = module_name + "_" + field_access.field.lexeme
-        ("@" + func_name, "i32", false, "i32")
+        func_name = "@" + module_name + "_" + field_access.field.lexeme
       }
     }
-    _ =>
-      // 不支持的调用表达式类型
-      // 暂时返回错误值，应该在实际使用时报告错误
-      ("@unknown", "i32", false, "i32")
+    _ => func_name = "@unknown"
   }
 
   // 检查是否是 @unknown 函数（不应该调用）
@@ -772,48 +1325,36 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> (String, String) {
   }
 
   // 生成函数调用代码
-  // 构建带类型的参数列表：为每个参数添加类型
-  // 对于普通函数调用，所有参数都是 i32
-  // 对于特殊函数调用（如 Array::make），param_types 可能是 "i32, i32"
-  // 简化处理：如果 param_types 是 "i32"，所有参数都是 i32
-  // 如果 param_types 包含逗号，需要按逗号分割（暂时简化处理）
-  let mut param_type_list = ""
-  let mut first = true
-
-  // 确定每个参数的类型
-  // 对于普通函数（param_types 是 "i32"），所有参数都是 i32
-  // 对于特殊函数（param_types 是 "i32, i32"），需要按顺序使用类型
-  // 简化处理：如果 param_types 包含逗号，只使用第一个类型（TODO: 正确解析多个类型）
-  let default_param_type = if param_types.contains(",") {
-    // 多个参数类型，暂时只使用第一个类型（简化处理）
-    // 找到第一个逗号，取前面的部分作为类型
-    let mut base_type = ""
-    for ch in param_types.to_array() {
-      if ch == ',' {
-        break
-      } else {
-        base_type = base_type + ch.to_string()
-      }
-    }
-    base_type
-  } else {
-    // 单个参数类型，所有参数都使用这个类型
-    param_types
+  let args_count = args_temps.length()
+  let param_types_for_call : Array[String] = match builtin_param_types {
+    Some(types) => types
+    None => Array::new()
   }
-
-  // 为每个参数添加类型
-  for arg_temp in args_temps {
-    let param_type = if default_param_type != "" {
-      default_param_type
-    } else {
-      "i32"
+  if param_types_for_call.length() == 0 {
+    let mut idx = 0
+    while idx < args_count {
+      param_types_for_call.push("i32")
+      idx = idx + 1
     }
-    if first {
-      param_type_list = param_type + " " + arg_temp
-      first = false
-    } else {
-      param_type_list = param_type_list + ", " + param_type + " " + arg_temp
+  } else if param_types_for_call.length() < args_count {
+    let fallback_index = param_types_for_call.length() - 1
+    let fallback_type = param_types_for_call[fallback_index]
+    while param_types_for_call.length() < args_count {
+      param_types_for_call.push(fallback_type)
     }
+  }
+  let mut param_type_list = ""
+  let mut index = 0
+  while index < args_count {
+    let arg_temp = args_temps[index]
+    let param_type = param_types_for_call[index]
+    let entry = param_type + " " + arg_temp
+    if param_type_list == "" {
+      param_type_list = entry
+    } else {
+      param_type_list = param_type_list + ", " + entry
+    }
+    index = index + 1
   }
   if is_void {
     // void 函数，不返回值
@@ -857,35 +1398,16 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> (String, String) {
 
 ///|
 // 模块9: if 表达式生成
-// 支持：嵌套 if、phi 节点、前驱标签正确性
-// if 表达式：if condition { then_expr } else { else_expr }
-// 返回：(生成的代码, 结果临时变量名, merge_label)
-// merge_label 用于嵌套 if 表达式的情况，让外层 if 表达式知道嵌套 if 表达式的合并点
-fn llvm_gen_if_expr_internal(
-  gen : LLVMGen,
-  if_expr : IfExpr,
-  outer_merge_label : String,
-) -> (String, String, String) {
-  // 生成条件表达式
+// 使用 alloca + store 模式避免复杂 phi
+fn llvm_gen_if_expr(gen : LLVMGen, if_expr : IfExpr) -> (String, String) {
   let (cond_code, cond_temp) = llvm_gen_expr(gen, if_expr.condition)
-
-  // 生成标签
   let then_label = gen.next_label()
   let else_label = gen.next_label()
-  // 如果提供了 outer_merge_label，使用它作为 merge_label（嵌套 if 表达式的情况）
-  // 否则，生成新的 merge_label
-  let merge_label = if outer_merge_label != "" {
-    outer_merge_label
-  } else {
-    gen.next_label()
-  }
-  let result_temp = gen.next_temp()
-
-  // 生成条件比较
+  let merge_label = gen.next_label()
+  let result_ptr = gen.next_temp()
+  let alloc_code = "  " + result_ptr + " = alloca i32\n"
   let cmp_temp = gen.next_temp()
   let cmp_code = "  " + cmp_temp + " = icmp ne i32 " + cond_temp + ", 0\n"
-
-  // 生成分支指令
   let br_code = "  br i1 " +
     cmp_temp +
     ", label %" +
@@ -893,78 +1415,44 @@ fn llvm_gen_if_expr_internal(
     ", label %" +
     else_label +
     "\n"
-
-  // 生成 then 分支
   let (then_code, then_temp) = llvm_gen_expr(gen, if_expr.then_expr)
-  let then_br_code = "  br label %" + merge_label + "\n"
-
-  // 生成 else 分支
-  // 检查 else_expr 是否是嵌套的 if 表达式
-  let (else_code, else_temp, else_phi_label) = match if_expr.else_expr.kind {
-    ExprKind::If(nested_if_expr) => {
-      // else_expr 是嵌套的 if 表达式
-      // 让嵌套 if 表达式使用自己的 merge_label（不传入 outer_merge_label）
-      // 这样嵌套 if 表达式会生成自己的 merge_label，然后跳转到外层的 merge_label
-      let (nested_code, nested_temp, nested_merge_label) = llvm_gen_if_expr_internal(
-        gen, nested_if_expr, "",
-      )
-      // 嵌套 if 表达式使用自己的 merge_label
-      // 我们需要在嵌套 if 表达式的 merge_label 之后添加跳转到外层的 merge_label 的指令
-      // 但是，由于嵌套 if 表达式的代码已经包含了 merge_label 和 phi 节点，我们需要在其后添加跳转指令
-      // 实际上，嵌套 if 表达式的代码结构是：条件代码 + then代码 + else代码 + merge_label + phi节点
-      // 我们需要在 phi 节点之后添加跳转到外层的 merge_label 的指令
-      // 但是，由于嵌套 if 表达式的代码已经包含了 phi 节点，我们需要在其后添加跳转指令
-      // 所以，我们需要在嵌套 if 表达式的代码之后添加跳转指令
-      // 但是，由于嵌套 if 表达式的代码已经包含了 merge_label 和 phi 节点，我们需要在其后添加跳转指令
-      // 所以，我们需要在嵌套 if 表达式的代码之后添加跳转指令
-      let nested_br_code = "  br label %" + merge_label + "\n"
-      // 嵌套 if 表达式的 merge_label 跳转到外层的 merge_label
-      // 外层的 PHI 节点应该使用嵌套 if 表达式的 merge_label 作为前驱
-      (nested_code + nested_br_code, nested_temp, nested_merge_label)
-    }
-    _ => {
-      // else_expr 不是嵌套的 if 表达式，正常生成代码
-      let (code, temp) = llvm_gen_expr(gen, if_expr.else_expr)
-      let else_br_code = "  br label %" + merge_label + "\n"
-      (code + else_br_code, temp, else_label)
-    }
-  }
-  let phi_code = "  " +
-    result_temp +
-    " = phi i32 [ " +
-    then_temp +
-    ", %" +
-    then_label +
-    " ], [ " +
-    else_temp +
-    ", %" +
-    else_phi_label +
-    " ]\n"
-
-  // 组合所有代码
-  let code = cond_code +
+  let then_value = if then_temp != "" { then_temp } else { "0" }
+  let then_store_code = "  store i32 " +
+    then_value +
+    ", i32* " +
+    result_ptr +
+    "\n" +
+    "  br label %" +
+    merge_label +
+    "\n"
+  let (else_code, else_temp) = llvm_gen_expr(gen, if_expr.else_expr)
+  let else_value = if else_temp != "" { else_temp } else { "0" }
+  let else_store_code = "  store i32 " +
+    else_value +
+    ", i32* " +
+    result_ptr +
+    "\n" +
+    "  br label %" +
+    merge_label +
+    "\n"
+  let result_temp = gen.next_temp()
+  let load_code = "  " + result_temp + " = load i32, i32* " + result_ptr + "\n"
+  let code = alloc_code +
+    cond_code +
     cmp_code +
     br_code +
     then_label +
     ":\n" +
     then_code +
-    then_br_code +
+    then_store_code +
     else_label +
     ":\n" +
     else_code +
+    else_store_code +
     merge_label +
     ":\n" +
-    phi_code
-  (code, result_temp, merge_label)
-}
-
-///|
-// 模块9: if 表达式生成（公共接口）
-// 支持：嵌套 if、phi 节点、前驱标签正确性
-// if 表达式：if condition { then_expr } else { else_expr }
-fn llvm_gen_if_expr(gen : LLVMGen, if_expr : IfExpr) -> (String, String) {
-  let (code, temp, _merge_label) = llvm_gen_if_expr_internal(gen, if_expr, "")
-  (code, temp)
+    load_code
+  (code, result_temp)
 }
 
 ///|
@@ -1096,7 +1584,11 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, String) {
   // 生成 then 分支（语句数组）
   let (then_code, then_last_temp) = llvm_gen_statements(gen, if_stmt.then_body)
   let then_value = if then_last_temp != "" { then_last_temp } else { "0" }
-  let then_store_code = "  store i32 " + then_value + ", i32* " + result_ptr + "\n"
+  let then_store_code = "  store i32 " +
+    then_value +
+    ", i32* " +
+    result_ptr +
+    "\n"
   let then_br_code = then_store_code + "  br label %" + merge_label + "\n"
 
   // 生成 else 分支（如果有）
@@ -1105,9 +1597,12 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, String) {
     _ => llvm_gen_statements(gen, if_stmt.else_body)
   }
   let else_value = if else_last_temp != "" { else_last_temp } else { "0" }
-  let else_store_code = "  store i32 " + else_value + ", i32* " + result_ptr + "\n"
+  let else_store_code = "  store i32 " +
+    else_value +
+    ", i32* " +
+    result_ptr +
+    "\n"
   let else_br_code = else_store_code + "  br label %" + merge_label + "\n"
-
   let result_temp = gen.next_temp()
   let load_code = "  " + result_temp + " = load i32, i32* " + result_ptr + "\n"
 
@@ -1201,6 +1696,7 @@ fn llvm_gen_return(gen : LLVMGen, return_stmt : ReturnStmt) -> String {
 fn llvm_gen_function(
   struct_defs_map : Array[(String, Array[String])],
   function_stmt : FunctionStmt,
+  closure_metadata : ClosureMetadata,
 ) -> String {
   // 如果是 main 函数，生成 minimbt_main 以匹配 riscv_rt/start.c
   let func_name = if function_stmt.name.lexeme == "main" {
@@ -1275,6 +1771,7 @@ fn llvm_gen_function(
     }
   }
   output = output + "}\n\n"
+  let _ = closure_metadata.get_free_vars(function_stmt)
   output
 }
 

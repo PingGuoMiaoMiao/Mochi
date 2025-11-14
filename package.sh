@@ -16,8 +16,12 @@ mkdir -p "${PACKAGE_DIR}"
 
 # 复制源代码
 echo "复制源代码..."
-mkdir -p "${PACKAGE_DIR}/src"
-cp -r src/* "${PACKAGE_DIR}/src/"
+CODE_DIRS=("bin" "mochi" "compiler-crash-course" "riscv_rt" "test_cases")
+for dir in "${CODE_DIRS[@]}"; do
+  if [ -d "${dir}" ]; then
+    cp -r "${dir}" "${PACKAGE_DIR}/"
+  fi
+done
 
 # 复制配置文件
 echo "复制配置文件..."

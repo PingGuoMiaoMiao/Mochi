@@ -503,48 +503,9 @@ fn Tycker::analyze_statements(self : Tycker, statements : Array[Stmt]) -> Unit {
         // Parse parameter types from function signature
         let param_types : Array[Type] = Array::new()
         for param in function_stmt.parameters {
-          // Parse parameter type from function signature
-          let param_type = match param.type_name {
-            Some(type_token) =>
-              // Parse type from token (similar to visit_stmt for Function)
-              if type_token.lexeme == "Array" {
-                // Array type - check for element type
-                match param.element_type_name {
-                  Some(element_token) => {
-                    let element_type = if element_token.lexeme == "Array" {
-                      Type::array_type(Type::double())
-                    } else if element_token.lexeme == "Bool" {
-                      // Array[(Type) -> Bool] - function type with Bool return type
-                      let param_type_array : Array[Type] = Array::new()
-                      param_type_array.push(Type::int())
-                      Type::function_type(param_type_array, Type::bool())
-                    } else if element_token.lexeme == "Double" {
-                      let param_name = param.name.lexeme
-                      if param_name == "mat" ||
-                        param_name == "a" ||
-                        param_name == "b" ||
-                        param_name == "c" {
-                        Type::array_type(Type::double())
-                      } else {
-                        Type::double()
-                      }
-                    } else {
-                      self.parse_type_from_token(element_token)
-                    }
-                    Type::array_type(element_type)
-                  }
-                  None =>
-                    // No element type specified - use Double as default
-                    Type::array_type(Type::double())
-                }
-              } else {
-                self.parse_type_from_token(type_token)
-              }
-            None =>
-              // No type annotation, use unknown
-              Type::unknown()
-          }
-          param_types.push(param_type)
+          param_types.push(
+            self.param_signature_type(function_stmt.generic_params, param),
+          )
         }
         let return_type = self.declared_return_type(function_stmt)
         let func_type = Type::function_type(param_types, return_type)
@@ -586,58 +547,12 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
             // Determine nested function type
             let nested_param_types : Array[Type] = Array::new()
             for param in nested_function_stmt.parameters {
-              // Parse parameter type from function signature
-              let param_type = match param.type_name {
-                Some(type_token) =>
-                  // Parse type from token
-                  if type_token.lexeme == "Array" {
-                    // Array type - check for element type
-                    match param.element_type_name {
-                      Some(element_token) => {
-                        let element_type = if element_token.lexeme == "Array" {
-                          // Nested Array[Array[Type]] - element type is also Array
-                          // For Array[Array[Double]], we need to infer Array[Double] as element type
-                          // Since we only have the innermost type token, we'll use Array[Double] as default
-                          // This is a limitation of the current parser design
-                          Type::array_type(Type::double())
-                        } else if element_token.lexeme == "Bool" {
-                          // This might be Array[(Int) -> Bool] - construct function type
-                          // For Array[(Int) -> Bool], we need (Int) -> Bool
-                          let param_types : Array[Type] = Array::new()
-                          param_types.push(Type::int())
-                          Type::function_type(param_types, Type::bool())
-                        } else if element_token.lexeme == "Double" {
-                          // For Array[Double], element type is Double
-                          // But if the parameter name suggests it's a matrix (like "mat", "a", "b", "c"),
-                          // it might be Array[Array[Double]]
-                          // This is a heuristic for matmul-flat.mbt
-                          let param_name = param.name.lexeme
-                          if param_name == "mat" ||
-                            param_name == "a" ||
-                            param_name == "b" ||
-                            param_name == "c" {
-                            // Likely Array[Array[Double]] for matrix operations
-                            Type::array_type(Type::double())
-                          } else {
-                            Type::double()
-                          }
-                        } else {
-                          self.parse_type_from_token(element_token)
-                        }
-                        Type::array_type(element_type)
-                      }
-                      None =>
-                        // No element type specified, use Double as default
-                        Type::array_type(Type::double())
-                    }
-                  } else {
-                    self.parse_type_from_token(type_token)
-                  }
-                None =>
-                  // No type annotation, use unknown
-                  Type::unknown()
-              }
-              nested_param_types.push(param_type)
+              nested_param_types.push(
+                self.param_signature_type(
+                  nested_function_stmt.generic_params,
+                  param,
+                ),
+              )
             }
             let nested_return_type = self.declared_return_type(
               nested_function_stmt,
@@ -669,41 +584,11 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
             self.env.push_empty()
             // Add nested function parameters to environment
             for param in nested_function_stmt.parameters {
-              match param.type_name {
-                Some(type_token) => {
-                  let param_type = if type_token.lexeme == "Array" {
-                    match param.element_type_name {
-                      Some(element_token) => {
-                        let element_type = if element_token.lexeme == "Array" {
-                          Type::array_type(Type::double())
-                        } else if element_token.lexeme == "Bool" {
-                          let param_type_array : Array[Type] = Array::new()
-                          param_type_array.push(Type::int())
-                          Type::function_type(param_type_array, Type::bool())
-                        } else if element_token.lexeme == "Double" {
-                          let param_name = param.name.lexeme
-                          if param_name == "mat" ||
-                            param_name == "a" ||
-                            param_name == "b" ||
-                            param_name == "c" {
-                            Type::array_type(Type::double())
-                          } else {
-                            Type::double()
-                          }
-                        } else {
-                          self.parse_type_from_token(element_token)
-                        }
-                        Type::array_type(element_type)
-                      }
-                      None => Type::array_type(Type::double())
-                    }
-                  } else {
-                    self.parse_type_from_token(type_token)
-                  }
-                  self.bind_token_with_type(param.name, param_type)
-                }
-                None => self.bind_token_with_type(param.name, Type::unknown())
-              }
+              let param_type = self.param_signature_type(
+                nested_function_stmt.generic_params,
+                param,
+              )
+              self.bind_token_with_type(param.name, param_type)
             }
             // Type check nested function body
             for nested_body_stmt in nested_function_stmt.body {
@@ -719,68 +604,11 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
       // Add parameters to environment
       // Parse parameter types from function signature
       for param in function_stmt.parameters {
-        match param.type_name {
-          Some(type_token) => {
-            // Parse type from token
-            let param_type = if type_token.lexeme == "Array" {
-              // Array type - check for element type
-              match param.element_type_name {
-                Some(element_token) => {
-                  // Check if this is a function type: Array[(Type) -> Type]
-                  // The parser sets element_type_name to the return type token when it encounters
-                  // Array[(Type) -> Type]. We can detect this by checking if element_token is Bool
-                  // and the parameter name suggests it's a function array (like "cond").
-                  // For now, we'll use a heuristic: if element_token is Bool, it might be Array[(Int) -> Bool]
-                  // Actually, we can't reliably detect this without storing the parameter type.
-                  // Let's try a different approach: if element_token is Bool and we're in Array context,
-                  // assume it's Array[(Int) -> Bool] for counter.mbt. This is a workaround.
-                  let element_type = if element_token.lexeme == "Array" {
-                    // Nested Array[Array[Type]] - element type is also Array
-                    // For Array[Array[Double]], we need to infer Array[Double] as element type
-                    // Since we only have the innermost type token, we'll use Array[Double] as default
-                    // This is a limitation of the current parser design
-                    Type::array_type(Type::double())
-                  } else if element_token.lexeme == "Bool" {
-                    // This might be Array[(Type) -> Bool] - function type with Bool return type
-                    // For counter.mbt: Array[(Int) -> Bool]
-                    // We'll assume parameter type is Int for now (this is a limitation)
-                    let param_type_array : Array[Type] = Array::new()
-                    param_type_array.push(Type::int()) // Assume Int parameter type
-                    let return_type = Type::bool()
-                    Type::function_type(param_type_array, return_type)
-                  } else if element_token.lexeme == "Double" {
-                    // For Array[Double], element type is Double
-                    // But if the parameter name suggests it's a matrix (like "mat", "a", "b", "c"),
-                    // it might be Array[Array[Double]]
-                    // This is a heuristic for matmul-flat.mbt
-                    let param_name = param.name.lexeme
-                    if param_name == "mat" ||
-                      param_name == "a" ||
-                      param_name == "b" ||
-                      param_name == "c" {
-                      // Likely Array[Array[Double]] for matrix operations
-                      Type::array_type(Type::double())
-                    } else {
-                      Type::double()
-                    }
-                  } else {
-                    self.parse_type_from_token(element_token)
-                  }
-                  Type::array_type(element_type)
-                }
-                None =>
-                  // No element type specified - use Double as default
-                  Type::array_type(Type::double())
-              }
-            } else {
-              self.parse_type_from_token(type_token)
-            }
-            self.bind_token_with_type(param.name, param_type)
-          }
-          None =>
-            // No type annotation, use unknown
-            self.bind_token_with_type(param.name, Type::unknown())
-        }
+        let param_type = self.param_signature_type(
+          function_stmt.generic_params,
+          param,
+        )
+        self.bind_token_with_type(param.name, param_type)
       }
       // Second pass: type check all statements (excluding nested functions, which were already checked)
       for body_stmt in function_stmt.body {
@@ -839,26 +667,118 @@ fn Tycker::declared_return_type(
   if function_stmt.return_type_is_function {
     let param_types : Array[Type] = Array::new()
     for token in function_stmt.function_return_param_types {
-      param_types.push(self.parse_type_from_token(token))
+      param_types.push(
+        self.type_from_token_with_generics(token, function_stmt.generic_params),
+      )
     }
     let inner_return_type = match function_stmt.return_type {
-      Some(token) => self.parse_type_from_token(token)
+      Some(token) =>
+        self.type_from_token_with_generics(token, function_stmt.generic_params)
       None => Type::unknown()
     }
     Type::function_type(param_types, inner_return_type)
+  } else if function_stmt.return_type_is_tuple {
+    let tuple_types : Array[Type] = Array::new()
+    for token in function_stmt.return_tuple_element_types {
+      tuple_types.push(
+        self.type_from_token_with_generics(token, function_stmt.generic_params),
+      )
+    }
+    Type::tuple_type(tuple_types)
   } else {
     match function_stmt.return_type {
       Some(token) =>
         if token.lexeme == "Array" {
-          Type::array_type(Type::array_type(Type::double()))
+          self.array_type_from_generics(
+            function_stmt.return_type_array_generics,
+            function_stmt.generic_params,
+          )
         } else {
-          match self.type_from_token(token) {
-            Some(ty) => ty
-            None => Type::unknown()
-          }
+          self.type_from_token_with_generics(
+            token,
+            function_stmt.generic_params,
+          )
         }
       None => Type::unknown()
     }
+  }
+}
+
+///|
+fn Tycker::param_signature_type(
+  self : Tycker,
+  generic_params : Array[Token],
+  param : FunctionParam,
+) -> Type {
+  if param.is_function_type {
+    let param_types : Array[Type] = Array::new()
+    for token in param.function_param_types {
+      param_types.push(
+        self.type_from_token_with_generics(token, generic_params),
+      )
+    }
+    let return_type = match param.function_return_type {
+      Some(token) => self.type_from_token_with_generics(token, generic_params)
+      None => Type::unknown()
+    }
+    Type::function_type(param_types, return_type)
+  } else if param.is_tuple_type {
+    let tuple_types : Array[Type] = Array::new()
+    for token in param.tuple_element_types {
+      tuple_types.push(
+        self.type_from_token_with_generics(token, generic_params),
+      )
+    }
+    Type::tuple_type(tuple_types)
+  } else {
+    match param.type_name {
+      Some(type_token) =>
+        self.type_from_annotation_tokens(generic_params, param, type_token)
+      None => Type::unknown()
+    }
+  }
+}
+
+///|
+fn Tycker::type_from_annotation_tokens(
+  self : Tycker,
+  generic_params : Array[Token],
+  param : FunctionParam,
+  type_token : Token,
+) -> Type {
+  if self.is_generic_name(generic_params, type_token) {
+    Type::unknown()
+  } else if type_token.lexeme == "Array" {
+    match param.element_type_name {
+      Some(element_token) => {
+        if self.is_generic_name(generic_params, element_token) {
+          return Type::unknown()
+        }
+        let element_type = if element_token.lexeme == "Array" {
+          Type::array_type(Type::double())
+        } else if element_token.lexeme == "Bool" {
+          let param_type_array : Array[Type] = Array::new()
+          param_type_array.push(Type::int())
+          Type::function_type(param_type_array, Type::bool())
+        } else if element_token.lexeme == "Double" {
+          let param_name = param.name.lexeme
+          if param_name == "mat" ||
+            param_name == "a" ||
+            param_name == "b" ||
+            param_name == "c" {
+            Type::array_type(Type::double())
+          } else {
+            Type::double()
+          }
+        } else {
+          self.type_from_token_with_generics(element_token, generic_params)
+        }
+        Type::array_type(element_type)
+      }
+      None => Type::array_type(Type::double())
+    }
+  } else {
+    self.type_from_token_with_generics(type_token, generic_params)
   }
 }
 
@@ -963,11 +883,6 @@ fn Tycker::visit_let_stmt(self : Tycker, let_stmt : LetStmt) -> Unit {
       }
   }
   self.bind_token_with_type(let_stmt.name, binding_type)
-  match let_stmt.name.kind {
-    TokenKind::Underscore =>
-      self.update_last_expr_info(value_type, let_stmt.value.range)
-    _ => ()
-  }
 }
 
 ///|
@@ -1104,7 +1019,6 @@ fn Tycker::visit_assign_stmt(self : Tycker, assign_stmt : AssignStmt) -> Unit {
     _ => Type::unknown()
   }
   let value_type = self.visit_expr(assign_stmt.value)
-  self.update_last_expr_info(value_type, assign_stmt.value.range)
   if !target_type.equals(Type::unknown()) &&
     !value_type.equals(Type::unknown()) &&
     !value_type.equals(target_type) {
@@ -1166,25 +1080,9 @@ fn Tycker::resolve_ident(self : Tycker, token : Token) -> Type {
     None => {
       // Check for built-in functions
       let name = token.lexeme
-      if name == "print_int" {
-        // print_int: (Int) -> Unit
-        let param_types : Array[Type] = Array::new()
-        param_types.push(Type::int())
-        Type::function_type(param_types, Type::unit())
-      } else if name == "truncate" {
-        // truncate: (Double) -> Int
-        let param_types : Array[Type] = Array::new()
-        param_types.push(Type::double())
-        Type::function_type(param_types, Type::int())
-      } else if name == "print_endline" {
-        // print_endline: () -> Unit
-        let param_types : Array[Type] = Array::new()
-        Type::function_type(param_types, Type::unit())
-      } else {
-        // Check for qualified identifiers like Array::make
-        // For now, allow them as unknown functions
-        // In a full implementation, we'd need to resolve the qualifier
-        Type::unknown()
+      match builtin_function_type(name) {
+        Some(ty) => ty
+        None => Type::unknown()
       }
     }
   }
@@ -1386,25 +1284,17 @@ fn Tycker::visit_call_expr(self : Tycker, call_expr : CallExpr) -> Type {
           }
           // Report type mismatch if types don't match and both are known
           // Also report if expected_type is known but arg_type doesn't match
-          if !is_numeric_promotion {
-            if !expected_type.equals(Type::unknown()) &&
-              !arg_type.equals(expected_type) {
-              // Expected type is known but doesn't match argument type
-              if !arg_type.equals(Type::unknown()) {
-                // Both types are known, report mismatch
-                self.report_type_mismatch(
-                  call_expr.arguments[i].range,
-                  arg_type,
-                  expected_type,
-                  "Function call argument type mismatch.",
-                )
-              } else {
-                // Expected type is known but argument type is unknown
-                // This might be OK if argument type couldn't be inferred, but
-                // if we have a declared parameter type, we should check it
-                // For now, we'll allow it to pass silently
-              }
-            }
+          let arg_is_unknown = self.is_effectively_unknown_type(arg_type)
+          if !is_numeric_promotion &&
+            !expected_type.equals(Type::unknown()) &&
+            !self.type_matches_allow_unknown(expected_type, arg_type) &&
+            !arg_is_unknown {
+            self.report_type_mismatch(
+              call_expr.arguments[i].range,
+              arg_type,
+              expected_type,
+              "Function call argument type mismatch.",
+            )
           }
         }
         i = i + 1
@@ -1433,14 +1323,11 @@ fn Tycker::visit_call_expr(self : Tycker, call_expr : CallExpr) -> Type {
       Type::unknown()
     }
     _ => {
-      // Not a function type, but allow it for now (might be a builtin or error)
-      // Check argument types
       for arg in call_expr.arguments {
         let _ = self.visit_expr(arg)
 
       }
-      // Return Int as default (will be improved)
-      Type::int()
+      Type::unknown()
     }
   }
 }
@@ -1735,15 +1622,160 @@ fn Tycker::visit_field_access(
   field_access : FieldAccessExpr,
 ) -> Type {
   // Check object type
+  match field_access.object.kind {
+    ExprKind::Ident(token) =>
+      if token.lexeme == "Array" && field_access.field.lexeme == "make" {
+        return array_make_function_type()
+      }
+    _ => ()
+  }
   let _object_type = self.visit_expr(field_access.object)
-  // For now, return unknown type
-  // In a full implementation, we'd look up the field type from the struct definition
   Type::unknown()
+}
+
+///|
+fn builtin_function_type(name : String) -> Type? {
+  match name {
+    "print_int" => Some(function_type_single(Type::int(), Type::unit()))
+    "print_double" => Some(function_type_single(Type::double(), Type::unit()))
+    "print_endline" => Some(function_type_params(Array::new(), Type::unit()))
+    "int_of_float" => Some(function_type_single(Type::double(), Type::int()))
+    "float_of_int" => Some(function_type_single(Type::int(), Type::double()))
+    "truncate" => Some(function_type_single(Type::double(), Type::int()))
+    "abs_float" => Some(function_type_single(Type::double(), Type::double()))
+    "sqrt" => Some(function_type_single(Type::double(), Type::double()))
+    "sin" => Some(function_type_single(Type::double(), Type::double()))
+    "cos" => Some(function_type_single(Type::double(), Type::double()))
+    "atan" => Some(function_type_single(Type::double(), Type::double()))
+    _ => None
+  }
+}
+
+///|
+fn function_type_single(param : Type, ret : Type) -> Type {
+  let params : Array[Type] = Array::new()
+  params.push(param)
+  Type::function_type(params, ret)
+}
+
+///|
+fn function_type_params(params : Array[Type], ret : Type) -> Type {
+  Type::function_type(params, ret)
+}
+
+///|
+fn array_make_function_type() -> Type {
+  let params : Array[Type] = Array::new()
+  params.push(Type::int())
+  params.push(Type::int())
+  Type::function_type(params, Type::array_type(Type::int()))
 }
 
 ///|
 fn Tycker::visit_pattern(self : Tycker, pattern : Pattern) -> Unit {
   self.visit_pattern_with_expectation(pattern, None)
+}
+
+///|
+fn Tycker::type_from_token_with_generics(
+  self : Tycker,
+  token : Token,
+  generic_params : Array[Token],
+) -> Type {
+  if self.is_generic_name(generic_params, token) {
+    Type::unknown()
+  } else {
+    match self.type_from_token(token) {
+      Some(ty) => ty
+      None => Type::unknown()
+    }
+  }
+}
+
+///|
+fn Tycker::array_type_from_generics(
+  self : Tycker,
+  array_generics : Array[Token],
+  generic_params : Array[Token],
+) -> Type {
+  if array_generics.length() == 0 {
+    return Type::array_type(Type::double())
+  }
+  let mut current = self.type_from_token_with_generics(
+    array_generics[array_generics.length() - 1],
+    generic_params,
+  )
+  let mut idx = array_generics.length()
+  while idx > 0 {
+    idx = idx - 1
+    let token = array_generics[idx]
+    if token.lexeme == "Array" {
+      current = Type::array_type(current)
+    } else if idx < array_generics.length() - 1 {
+      current = self.type_from_token_with_generics(token, generic_params)
+    }
+  }
+  Type::array_type(current)
+}
+
+///|
+fn Tycker::is_generic_name(
+  _self : Tycker,
+  generic_params : Array[Token],
+  token : Token,
+) -> Bool {
+  for param_token in generic_params {
+    if param_token.lexeme == token.lexeme {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn Tycker::type_matches_allow_unknown(
+  self : Tycker,
+  expected : Type,
+  actual : Type,
+) -> Bool {
+  match expected.kind {
+    TypeKind::Unknown => true
+    TypeKind::Function =>
+      match actual.kind {
+        TypeKind::Function =>
+          if expected.param_types.length() != actual.param_types.length() {
+            false
+          } else {
+            let mut params_ok = true
+            let mut i = 0
+            while i < expected.param_types.length() {
+              if !self.type_matches_allow_unknown(
+                  expected.param_types[i],
+                  actual.param_types[i],
+                ) {
+                params_ok = false
+                break
+              }
+              i = i + 1
+            }
+            if !params_ok {
+              false
+            } else {
+              match expected.return_type {
+                Some(exp_ret) =>
+                  match actual.return_type {
+                    Some(act_ret) =>
+                      self.type_matches_allow_unknown(exp_ret, act_ret)
+                    None => false
+                  }
+                None => true
+              }
+            }
+          }
+        _ => false
+      }
+    _ => expected.equals(actual)
+  }
 }
 
 ///|
@@ -1944,6 +1976,19 @@ fn Tycker::update_last_expr_info(
 }
 
 ///|
+fn Tycker::is_effectively_unknown_type(self : Tycker, ty : Type) -> Bool {
+  match ty.kind {
+    TypeKind::Unknown => true
+    TypeKind::Function =>
+      match ty.return_type {
+        Some(ret_type) => self.is_effectively_unknown_type(ret_type)
+        None => true
+      }
+    _ => false
+  }
+}
+
+///|
 fn Tycker::mark_explicit_return(self : Tycker) -> Unit {
   if self.has_explicit_return_stack.length() == 0 {
     return
@@ -1982,14 +2027,8 @@ fn Tycker::check_implicit_return(
           expected_return_type.name() +
           ".",
         )
-      } else if last_expr_type.equals(Type::unknown()) {
-        self.report_error(
-          last_expr_range,
-          "Cannot infer return value for function '" +
-          function_stmt.name.lexeme +
-          "'.",
-        )
-      } else if !last_expr_type.equals(expected_return_type) {
+      } else if !last_expr_type.equals(Type::unknown()) &&
+        !last_expr_type.equals(expected_return_type) {
         self.report_type_mismatch(
           last_expr_range, last_expr_type, expected_return_type, "Return type mismatch.",
         )
