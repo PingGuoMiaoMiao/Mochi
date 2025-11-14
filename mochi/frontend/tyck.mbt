@@ -546,25 +546,7 @@ fn Tycker::analyze_statements(self : Tycker, statements : Array[Stmt]) -> Unit {
           }
           param_types.push(param_type)
         }
-        let return_type = if function_stmt.return_type_is_function {
-          Type::unknown()
-        } else {
-          match function_stmt.return_type {
-            Some(token) =>
-              // Check if return type is Array - if so, try to infer nested array type
-              if token.lexeme == "Array" {
-                // For Array return type, default to Array[Array[Double]] for now
-                // This is a heuristic - in a full implementation, we'd parse the full type
-                Type::array_type(Type::array_type(Type::double()))
-              } else {
-                match self.type_from_token(token) {
-                  Some(ty) => ty
-                  None => Type::unknown() // Use unknown if can't parse, will be checked in visit_stmt
-                }
-              }
-            None => Type::unknown() // Use unknown if no return type specified
-          }
-        }
+        let return_type = self.declared_return_type(function_stmt)
         let func_type = Type::function_type(param_types, return_type)
         // Add function name to environment
         self.bind_token_with_type(function_stmt.name, func_type)
@@ -590,25 +572,7 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
     StmtKind::Let(let_stmt) => self.visit_let_stmt(let_stmt)
     StmtKind::Function(function_stmt) => {
       let previous_return_type = self.current_return_type
-      let expected_return_type = if function_stmt.return_type_is_function {
-        Type::unknown()
-      } else {
-        match function_stmt.return_type {
-          Some(token) =>
-            // Check if return type is Array - if so, try to infer nested array type
-            if token.lexeme == "Array" {
-              // For Array return type, default to Array[Array[Double]] for now
-              // This is a heuristic - in a full implementation, we'd parse the full type
-              Type::array_type(Type::array_type(Type::double()))
-            } else {
-              match self.type_from_token(token) {
-                Some(ty) => ty
-                None => Type::unknown()
-              }
-            }
-          None => Type::unknown()
-        }
-      }
+      let expected_return_type = self.declared_return_type(function_stmt)
       self.current_return_type = expected_return_type
       self.function_depth = self.function_depth + 1
       self.env.push_empty()
@@ -675,60 +639,9 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
               }
               nested_param_types.push(param_type)
             }
-            let nested_return_type = match nested_function_stmt.return_type {
-              Some(token) =>
-                // Check if return type is Array - if so, try to infer nested array type
-                if token.lexeme == "Array" {
-                  // For Array return type, default to Array[Array[Double]] for now
-                  // This is a heuristic - in a full implementation, we'd parse the full type
-                  Type::array_type(Type::array_type(Type::double()))
-                } else {
-                  match self.type_from_token(token) {
-                    Some(ty) => ty
-                    None =>
-                      // Try to infer return type from function body
-                      // For now, default to Int, but we'll improve this
-                      Type::int()
-                  }
-                }
-              None =>
-                // Infer return type from function body
-                // Check the last statement in the function body
-                if nested_function_stmt.body.length() > 0 {
-                  let last_stmt = nested_function_stmt.body[nested_function_stmt.body.length() -
-                    1]
-                  match last_stmt.kind {
-                    StmtKind::Return(return_stmt) =>
-                      match return_stmt.value {
-                        Some(_expr) =>
-                          // Temporarily visit the expression to get its type
-                          // This is a simplified inference - in a full implementation,
-                          // we'd need to properly type-check the function body
-                          Type::int() // Default to Int for now
-                        None => Type::unit()
-                      }
-                    StmtKind::ExprStmt(expr) =>
-                      // Last expression statement - infer its type
-                      // For now, check if it's a comparison (returns Bool)
-                      match expr.kind {
-                        ExprKind::Binary(binary) =>
-                          match binary.operator.kind {
-                            TokenKind::Greater
-                            | TokenKind::GreaterEqual
-                            | TokenKind::Less
-                            | TokenKind::LessEqual
-                            | TokenKind::EqualEqual
-                            | TokenKind::BangEqual => Type::bool()
-                            _ => Type::int()
-                          }
-                        _ => Type::int()
-                      }
-                    _ => Type::int()
-                  }
-                } else {
-                  Type::unit()
-                }
-            }
+            let nested_return_type = self.declared_return_type(
+              nested_function_stmt,
+            )
             let nested_func_type = Type::function_type(
               nested_param_types, nested_return_type,
             )
@@ -748,18 +661,9 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
           StmtKind::Function(nested_function_stmt) => {
             // Type check nested function body
             let previous_return_type = self.current_return_type
-            let nested_expected_return_type = match nested_function_stmt.return_type {
-              Some(token) =>
-                if token.lexeme == "Array" {
-                  Type::array_type(Type::array_type(Type::double()))
-                } else {
-                  match self.type_from_token(token) {
-                    Some(ty) => ty
-                    None => Type::unknown()
-                  }
-                }
-              None => Type::unknown()
-            }
+            let nested_expected_return_type = self.declared_return_type(
+              nested_function_stmt,
+            )
             self.current_return_type = nested_expected_return_type
             self.function_depth = self.function_depth + 1
             self.env.push_empty()
@@ -890,15 +794,18 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
       self.env.pop()
       self.function_depth = self.function_depth - 1
       self.current_return_type = previous_return_type
-      let last_expr_type = self.last_expr_type_stack.pop().unwrap_or(Type::unknown())
-      let last_expr_range = self.last_expr_range_stack.pop().unwrap_or(function_stmt.name.range)
-      let had_explicit_return = self.has_explicit_return_stack.pop().unwrap_or(false)
+      let last_expr_type = self.last_expr_type_stack
+        .pop()
+        .unwrap_or(Type::unknown())
+      let last_expr_range = self.last_expr_range_stack
+        .pop()
+        .unwrap_or(function_stmt.name.range)
+      let had_explicit_return = self.has_explicit_return_stack
+        .pop()
+        .unwrap_or(false)
       if !had_explicit_return {
         self.check_implicit_return(
-          function_stmt,
-          expected_return_type,
-          last_expr_type,
-          last_expr_range,
+          function_stmt, expected_return_type, last_expr_type, last_expr_range,
         )
       }
     }
@@ -920,6 +827,37 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
       for variant in enum_def.variants {
         self.bind_token_with_type(variant.name, enum_type)
       }
+    }
+  }
+}
+
+///|
+fn Tycker::declared_return_type(
+  self : Tycker,
+  function_stmt : FunctionStmt,
+) -> Type {
+  if function_stmt.return_type_is_function {
+    let param_types : Array[Type] = Array::new()
+    for token in function_stmt.function_return_param_types {
+      param_types.push(self.parse_type_from_token(token))
+    }
+    let inner_return_type = match function_stmt.return_type {
+      Some(token) => self.parse_type_from_token(token)
+      None => Type::unknown()
+    }
+    Type::function_type(param_types, inner_return_type)
+  } else {
+    match function_stmt.return_type {
+      Some(token) =>
+        if token.lexeme == "Array" {
+          Type::array_type(Type::array_type(Type::double()))
+        } else {
+          match self.type_from_token(token) {
+            Some(ty) => ty
+            None => Type::unknown()
+          }
+        }
+      None => Type::unknown()
     }
   }
 }
@@ -1026,7 +964,8 @@ fn Tycker::visit_let_stmt(self : Tycker, let_stmt : LetStmt) -> Unit {
   }
   self.bind_token_with_type(let_stmt.name, binding_type)
   match let_stmt.name.kind {
-    TokenKind::Underscore => self.update_last_expr_info(value_type, let_stmt.value.range)
+    TokenKind::Underscore =>
+      self.update_last_expr_info(value_type, let_stmt.value.range)
     _ => ()
   }
 }
@@ -2023,39 +1962,38 @@ fn Tycker::check_implicit_return(
 ) -> Unit {
   match expected_return_type.kind {
     TypeKind::Unknown => ()
-    TypeKind::Unit => {
+    TypeKind::Unit =>
       if !last_expr_type.equals(Type::unit()) &&
         !last_expr_type.equals(Type::unknown()) {
         self.report_error(
           last_expr_range,
-          "Function '" + function_stmt.name.lexeme + "' should not return a value.",
+          "Function '" +
+          function_stmt.name.lexeme +
+          "' should not return a value.",
         )
       }
-    }
-    _ => {
+    _ =>
       if function_stmt.body.length() == 0 {
         self.report_error(
           function_stmt.name.range,
           "Function '" +
-            function_stmt.name.lexeme +
-            "' must return " +
-            expected_return_type.name() +
-            ".",
+          function_stmt.name.lexeme +
+          "' must return " +
+          expected_return_type.name() +
+          ".",
         )
       } else if last_expr_type.equals(Type::unknown()) {
         self.report_error(
           last_expr_range,
-          "Cannot infer return value for function '" + function_stmt.name.lexeme + "'.",
+          "Cannot infer return value for function '" +
+          function_stmt.name.lexeme +
+          "'.",
         )
       } else if !last_expr_type.equals(expected_return_type) {
         self.report_type_mismatch(
-          last_expr_range,
-          last_expr_type,
-          expected_return_type,
-          "Return type mismatch.",
+          last_expr_range, last_expr_type, expected_return_type, "Return type mismatch.",
         )
       }
-    }
   }
 }
 

@@ -1363,323 +1363,25 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
   let mut arrow : Token? = None
   let mut return_type : Token? = None
   let mut return_type_is_function = false
+  let mut function_return_param_types : Array[Token] = Array::new()
   match self.peek().kind {
-    TokenKind::Arrow => {
+    TokenKind::Arrow | TokenKind::ThinArrow => {
       arrow = Some(self.advance())
-      // Try to parse function type: (Type) -> Type
-      match self.peek().kind {
-        TokenKind::LParen => {
-          // Function type: (Type) -> Type
-          let _ = self.advance() // consume LParen
-          match self.peek().kind {
-            TokenKind::RParen => {
-              let _ = self.advance() // consume RParen
-              match self.peek().kind {
-                TokenKind::Arrow | TokenKind::ThinArrow => {
-                  let _ = self.advance() // consume ->
-                  match self.peek().kind {
-                    TokenKind::Ident => {
-                      return_type = Some(self.advance()) // consume return type
-                      return_type_is_function = true
-                    }
-                    _ =>
-                      self.error(
-                        self.peek(),
-                        "Expected return type after '->'.",
-                      )
-                  }
-                }
-                _ =>
-                  self.error(
-                    self.peek(),
-                    "Expected '->' after function parameter types.",
-                  )
-              }
-            }
-            TokenKind::Ident => {
-              let first_type = self.advance() // consume first type
-              match self.peek().kind {
-                TokenKind::Comma => {
-                  // Tuple type: (Type, Type, ...)
-                  let _ = self.advance() // consume comma
-                  // Parse remaining types
-                  for {
-                    if self.is_at_end() {
-                      break
-                    }
-                    match self.peek().kind {
-                      TokenKind::RParen => break
-                      TokenKind::Ident => {
-                        let _ = self.advance() // consume type
-                        match self.peek().kind {
-                          TokenKind::Comma => {
-                            let _ = self.advance()
-                            // consume comma
-                          }
-                          TokenKind::RParen => break
-                          _ => {
-                            self.error(
-                              self.peek(),
-                              "Expected ',' or ')' in tuple type.",
-                            )
-                            break
-                          }
-                        }
-                      }
-                      _ => {
-                        self.error(
-                          self.peek(),
-                          "Expected type name in tuple type.",
-                        )
-                        break
-                      }
-                    }
-                  }
-                  match self.peek().kind {
-                    TokenKind::RParen => {
-                      let _ = self.advance() // consume RParen
-                      // Use first type token as placeholder for tuple type
-                      return_type = Some(first_type)
-                    }
-                    _ =>
-                      self.error(
-                        self.peek(),
-                        "Expected ')' to close tuple type.",
-                      )
-                  }
-                }
-                TokenKind::RParen => {
-                  // Single type in parens - could be function type (Type) -> Type
-                  let _ = self.advance() // consume RParen
-                  match self.peek().kind {
-                    TokenKind::Arrow | TokenKind::ThinArrow => {
-                      let _ = self.advance() // consume ->
-                      match self.peek().kind {
-                        TokenKind::Ident => {
-                          return_type = Some(self.advance()) // consume return type
-                          return_type_is_function = true
-                        }
-                        _ =>
-                          self.error(
-                            self.peek(),
-                            "Expected return type after '->'.",
-                          )
-                      }
-                    }
-                    _ =>
-                      self.error(
-                        self.peek(),
-                        "Expected '->' after function parameter types.",
-                      )
-                  }
-                }
-                _ =>
-                  self.error(
-                    self.peek(),
-                    "Expected ',' or ')' after type in return type.",
-                  )
-              }
-            }
-            _ => self.error(self.peek(), "Expected type name in function type.")
+      match self.parse_return_type_after_arrow() {
+        Some(result) => {
+          let (parsed_return_type, parsed_is_function, parsed_params) = result
+          return_type = parsed_return_type
+          return_type_is_function = parsed_is_function
+          if parsed_is_function {
+            function_return_param_types = parsed_params
           }
         }
-        TokenKind::Ident => return_type = Some(self.advance())
-        _ => self.error(self.peek(), "Expected return type after '->'.")
-      }
-    }
-    TokenKind::ThinArrow => {
-      arrow = Some(self.advance())
-      // Try to parse function type: (Type) -> Type
-      match self.peek().kind {
-        TokenKind::LParen => {
-          // Function type: (Type) -> Type
-          let _ = self.advance() // consume LParen
-          match self.peek().kind {
-            TokenKind::RParen => {
-              let _ = self.advance() // consume RParen
-              match self.peek().kind {
-                TokenKind::Arrow | TokenKind::ThinArrow => {
-                  let _ = self.advance() // consume ->
-                  match self.peek().kind {
-                    TokenKind::Ident => {
-                      return_type = Some(self.advance()) // consume return type
-                      return_type_is_function = true
-                    }
-                    _ =>
-                      self.error(
-                        self.peek(),
-                        "Expected return type after '->'.",
-                      )
-                  }
-                }
-                _ =>
-                  self.error(
-                    self.peek(),
-                    "Expected '->' after function parameter types.",
-                  )
-              }
-            }
-            TokenKind::Ident => {
-              let first_type = self.advance() // consume first type
-              match self.peek().kind {
-                TokenKind::Comma => {
-                  // Tuple type: (Type, Type, ...)
-                  let _ = self.advance() // consume comma
-                  // Parse remaining types
-                  for {
-                    if self.is_at_end() {
-                      break
-                    }
-                    match self.peek().kind {
-                      TokenKind::RParen => break
-                      TokenKind::Ident => {
-                        let _ = self.advance() // consume type
-                        match self.peek().kind {
-                          TokenKind::Comma => {
-                            let _ = self.advance()
-                            // consume comma
-                          }
-                          TokenKind::RParen => break
-                          _ => {
-                            self.error(
-                              self.peek(),
-                              "Expected ',' or ')' in tuple type.",
-                            )
-                            break
-                          }
-                        }
-                      }
-                      _ => {
-                        self.error(
-                          self.peek(),
-                          "Expected type name in tuple type.",
-                        )
-                        break
-                      }
-                    }
-                  }
-                  match self.peek().kind {
-                    TokenKind::RParen => {
-                      let _ = self.advance() // consume RParen
-                      // Use first type token as placeholder for tuple type
-                      return_type = Some(first_type)
-                    }
-                    _ =>
-                      self.error(
-                        self.peek(),
-                        "Expected ')' to close tuple type.",
-                      )
-                  }
-                }
-                TokenKind::RParen => {
-                  // Single type in parens - could be function type (Type) -> Type
-                  let _ = self.advance() // consume RParen
-                  match self.peek().kind {
-                    TokenKind::Arrow | TokenKind::ThinArrow => {
-                      let _ = self.advance() // consume ->
-                      match self.peek().kind {
-                        TokenKind::Ident => {
-                          return_type = Some(self.advance()) // consume return type
-                          return_type_is_function = true
-                        }
-                        _ =>
-                          self.error(
-                            self.peek(),
-                            "Expected return type after '->'.",
-                          )
-                      }
-                    }
-                    _ =>
-                      self.error(
-                        self.peek(),
-                        "Expected '->' after function parameter types.",
-                      )
-                  }
-                }
-                _ =>
-                  self.error(
-                    self.peek(),
-                    "Expected ',' or ')' after type in return type.",
-                  )
-              }
-            }
-            _ => self.error(self.peek(), "Expected type name in function type.")
-          }
-        }
-        TokenKind::Ident => {
-          // Check for Array[Type] syntax
-          let type_token = self.advance()
-          match self.peek().kind {
-            TokenKind::LBracket => {
-              // Array[Type] syntax
-              let _ = self.advance() // consume [
-              // Parse element type (could be Int, Bool, or nested Array[Type])
-              match self.peek().kind {
-                TokenKind::Ident => {
-                  let _ = self.advance() // consume element type
-                  match self.peek().kind {
-                    TokenKind::RBracket => {
-                      let _ = self.advance()
-                      // consume ]
-                    }
-                    TokenKind::LBracket => {
-                      // Nested Array[Array[Type]]
-                      let _ = self.advance() // consume [
-                      match self.peek().kind {
-                        TokenKind::Ident => {
-                          let _ = self.advance() // consume nested element type
-                          match self.peek().kind {
-                            TokenKind::RBracket => {
-                              let _ = self.advance() // consume ]
-                              match self.peek().kind {
-                                TokenKind::RBracket => {
-                                  let _ = self.advance()
-                                  // consume outer ]
-                                }
-                                _ =>
-                                  self.error(
-                                    self.peek(),
-                                    "Expected ']' after nested array type.",
-                                  )
-                              }
-                            }
-                            _ =>
-                              self.error(
-                                self.peek(),
-                                "Expected ']' after nested array element type.",
-                              )
-                          }
-                        }
-                        _ =>
-                          self.error(
-                            self.peek(),
-                            "Expected element type in nested Array[Type].",
-                          )
-                      }
-                    }
-                    _ =>
-                      self.error(
-                        self.peek(),
-                        "Expected ']' after array element type.",
-                      )
-                  }
-                }
-                _ =>
-                  self.error(
-                    self.peek(),
-                    "Expected element type in Array[Type].",
-                  )
-              }
-              return_type = Some(type_token) // Use the Array token as return type
-            }
-            _ => return_type = Some(type_token) // Regular type name
-          }
-        }
-        _ => self.error(self.peek(), "Expected return type after '->'.")
+        None => ()
       }
     }
     _ => ()
   }
+
   // Function body can be either { ... } or a single expression
   let mut open_brace : Token? = None
   let mut close_brace : Token? = None
@@ -1757,6 +1459,7 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
     arrow,
     return_type,
     return_type_is_function,
+    function_return_param_types,
     open_brace: match open_brace {
       Some(brace) => brace
       None => {
@@ -1784,6 +1487,91 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
   }
   let stmt : Stmt = { kind: StmtKind::Function(info), range }
   Some(stmt)
+}
+
+///|
+fn Parser::parse_return_type_after_arrow(
+  self : Parser,
+) -> (Token?, Bool, Array[Token])? {
+  let mut parsed_return_type : Token? = None
+  let mut parsed_is_function = false
+  let param_tokens : Array[Token] = Array::new()
+  match self.peek().kind {
+    TokenKind::LParen => {
+      let _ = self.advance()
+      match self.peek().kind {
+        TokenKind::RParen => {
+          let _ = self.advance()
+
+        }
+        TokenKind::Ident => {
+          param_tokens.push(self.advance())
+          for {
+            match self.peek().kind {
+              TokenKind::Comma => {
+                let _ = self.advance()
+                match self.peek().kind {
+                  TokenKind::Ident => param_tokens.push(self.advance())
+                  _ => {
+                    self.error(
+                      self.peek(),
+                      "Expected type name in function type.",
+                    )
+                    return None
+                  }
+                }
+              }
+              TokenKind::RParen => {
+                let _ = self.advance()
+                break
+              }
+              _ => {
+                self.error(self.peek(), "Expected ',' or ')' in function type.")
+                return None
+              }
+            }
+          }
+        }
+        _ => {
+          self.error(self.peek(), "Expected type name in function type.")
+          return None
+        }
+      }
+      match self.peek().kind {
+        TokenKind::Arrow | TokenKind::ThinArrow => {
+          let _ = self.advance()
+          match self.peek().kind {
+            TokenKind::Ident => {
+              parsed_return_type = Some(self.advance())
+              parsed_is_function = true
+              return Some(
+                (parsed_return_type, parsed_is_function, param_tokens),
+              )
+            }
+            _ => {
+              self.error(self.peek(), "Expected return type after '->'.")
+              return None
+            }
+          }
+        }
+        _ => {
+          if param_tokens.length() > 0 {
+            parsed_return_type = Some(param_tokens[0])
+          }
+          return Some((parsed_return_type, false, Array::new()))
+        }
+      }
+    }
+    TokenKind::Ident => {
+      parsed_return_type = Some(self.advance())
+      return Some((parsed_return_type, false, Array::new()))
+    }
+    _ => {
+      self.error(self.peek(), "Expected return type after '->'.")
+      return None
+    }
+  }
+  None
 }
 
 ///|
