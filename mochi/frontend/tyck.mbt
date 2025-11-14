@@ -465,6 +465,9 @@ priv struct Tycker {
   mut function_depth : Int
   mut current_return_type : Type
   enum_defs : Array[EnumDef] // Store enum definitions for pattern matching
+  last_expr_type_stack : Array[Type]
+  last_expr_range_stack : Array[SourceRange]
+  has_explicit_return_stack : Array[Bool]
 }
 
 ///|
@@ -479,6 +482,9 @@ fn Tycker::new() -> Tycker {
     function_depth: 0,
     current_return_type: Type::unit(),
     enum_defs,
+    last_expr_type_stack: Array::new(),
+    last_expr_range_stack: Array::new(),
+    has_explicit_return_stack: Array::new(),
   }
 }
 
@@ -572,8 +578,8 @@ fn Tycker::analyze_statements(self : Tycker, statements : Array[Stmt]) -> Unit {
 fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
   match stmt.kind {
     StmtKind::ExprStmt(expr) => {
-      let _ = self.visit_expr(expr)
-
+      let value_type = self.visit_expr(expr)
+      self.update_last_expr_info(value_type, expr.range)
     }
     StmtKind::Guard(guard_stmt) => self.visit_guard_stmt(guard_stmt)
     StmtKind::Switch(switch_stmt) => self.visit_switch_stmt(switch_stmt)
@@ -598,6 +604,9 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
       self.current_return_type = expected_return_type
       self.function_depth = self.function_depth + 1
       self.env.push_empty()
+      self.last_expr_type_stack.push(Type::unknown())
+      self.last_expr_range_stack.push(function_stmt.name.range)
+      self.has_explicit_return_stack.push(false)
       // First pass: collect nested function definitions
       for body_stmt in function_stmt.body {
         match body_stmt.kind {
@@ -731,7 +740,8 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
           StmtKind::Function(nested_function_stmt) => {
             // Type check nested function body
             let previous_return_type = self.current_return_type
-            let nested_expected_return_type = match nested_function_stmt.return_type {
+            let nested_expected_return_type = match
+              nested_function_stmt.return_type {
               Some(token) =>
                 if token.lexeme == "Array" {
                   Type::array_type(Type::array_type(Type::double()))
@@ -873,6 +883,20 @@ fn Tycker::visit_stmt(self : Tycker, stmt : Stmt) -> Unit {
       self.env.pop()
       self.function_depth = self.function_depth - 1
       self.current_return_type = previous_return_type
+      let last_expr_type = self.last_expr_type_stack
+        .pop()
+        .unwrap_or(Type::unknown())
+      let last_expr_range = self.last_expr_range_stack
+        .pop()
+        .unwrap_or(function_stmt.name.range)
+      let had_explicit_return = self.has_explicit_return_stack
+        .pop()
+        .unwrap_or(false)
+      if !had_explicit_return {
+        self.check_implicit_return(
+          function_stmt, expected_return_type, last_expr_type, last_expr_range,
+        )
+      }
     }
     StmtKind::Return(return_stmt) => self.visit_return_stmt(return_stmt)
     StmtKind::While(while_stmt) => self.visit_while_stmt(while_stmt)
@@ -997,6 +1021,11 @@ fn Tycker::visit_let_stmt(self : Tycker, let_stmt : LetStmt) -> Unit {
       }
   }
   self.bind_token_with_type(let_stmt.name, binding_type)
+  match let_stmt.name.kind {
+    TokenKind::Underscore =>
+      self.update_last_expr_info(value_type, let_stmt.value.range)
+    _ => ()
+  }
 }
 
 ///|
@@ -1005,6 +1034,7 @@ fn Tycker::visit_return_stmt(self : Tycker, return_stmt : ReturnStmt) -> Unit {
     self.report_error(return_stmt.keyword.range, "Return outside of function.")
     return
   }
+  self.mark_explicit_return()
   match return_stmt.value {
     Some(expr) => {
       let value_type = self.visit_expr(expr)
@@ -1132,6 +1162,7 @@ fn Tycker::visit_assign_stmt(self : Tycker, assign_stmt : AssignStmt) -> Unit {
     _ => Type::unknown()
   }
   let value_type = self.visit_expr(assign_stmt.value)
+  self.update_last_expr_info(value_type, assign_stmt.value.range)
   if !target_type.equals(Type::unknown()) &&
     !value_type.equals(Type::unknown()) &&
     !value_type.equals(target_type) {
@@ -1950,6 +1981,78 @@ fn Tycker::report_type_mismatch(
     actual.name() +
     ")"
   self.report_error(range, detail)
+}
+
+///|
+fn Tycker::update_last_expr_info(
+  self : Tycker,
+  expr_type : Type,
+  range : SourceRange,
+) -> Unit {
+  if self.function_depth <= 0 {
+    return
+  }
+  if self.last_expr_type_stack.length() == 0 ||
+    self.last_expr_range_stack.length() == 0 {
+    return
+  }
+  let idx = self.last_expr_type_stack.length() - 1
+  self.last_expr_type_stack[idx] = expr_type
+  self.last_expr_range_stack[idx] = range
+}
+
+///|
+fn Tycker::mark_explicit_return(self : Tycker) -> Unit {
+  if self.has_explicit_return_stack.length() == 0 {
+    return
+  }
+  let idx = self.has_explicit_return_stack.length() - 1
+  self.has_explicit_return_stack[idx] = true
+}
+
+///|
+fn Tycker::check_implicit_return(
+  self : Tycker,
+  function_stmt : FunctionStmt,
+  expected_return_type : Type,
+  last_expr_type : Type,
+  last_expr_range : SourceRange,
+) -> Unit {
+  match expected_return_type.kind {
+    TypeKind::Unknown => ()
+    TypeKind::Unit =>
+      if !last_expr_type.equals(Type::unit()) &&
+        !last_expr_type.equals(Type::unknown()) {
+        self.report_error(
+          last_expr_range,
+          "Function '" +
+          function_stmt.name.lexeme +
+          "' should not return a value.",
+        )
+      }
+    _ =>
+      if function_stmt.body.length() == 0 {
+        self.report_error(
+          function_stmt.name.range,
+          "Function '" +
+          function_stmt.name.lexeme +
+          "' must return " +
+          expected_return_type.name() +
+          ".",
+        )
+      } else if last_expr_type.equals(Type::unknown()) {
+        self.report_error(
+          last_expr_range,
+          "Cannot infer return value for function '" +
+          function_stmt.name.lexeme +
+          "'.",
+        )
+      } else if !last_expr_type.equals(expected_return_type) {
+        self.report_type_mismatch(
+          last_expr_range, last_expr_type, expected_return_type, "Return type mismatch.",
+        )
+      }
+  }
 }
 
 ///|
