@@ -278,6 +278,7 @@ pub struct FunctionStmt {
   close_paren : Token?
   arrow : Token?
   return_type : Token?
+  return_type_is_function : Bool
   open_brace : Token
   body : Array[Stmt]
   close_brace : Token

@@ -1077,7 +1077,8 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, String) {
   let then_label = gen.next_label()
   let else_label = gen.next_label()
   let merge_label = gen.next_label()
-  let result_temp = gen.next_temp()
+  let result_ptr = gen.next_temp()
+  let alloc_code = "  " + result_ptr + " = alloca i32\n"
 
   // 生成条件比较
   let cmp_temp = gen.next_temp()
@@ -1094,33 +1095,25 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, String) {
 
   // 生成 then 分支（语句数组）
   let (then_code, then_last_temp) = llvm_gen_statements(gen, if_stmt.then_body)
-  let then_br_code = "  br label %" + merge_label + "\n"
+  let then_value = if then_last_temp != "" { then_last_temp } else { "0" }
+  let then_store_code = "  store i32 " + then_value + ", i32* " + result_ptr + "\n"
+  let then_br_code = then_store_code + "  br label %" + merge_label + "\n"
 
   // 生成 else 分支（如果有）
   let (else_code, else_last_temp) = match if_stmt.else_body.length() {
     0 => ("", "")
     _ => llvm_gen_statements(gen, if_stmt.else_body)
   }
-  let else_br_code = "  br label %" + merge_label + "\n"
-
-  // 生成 phi 节点（合并两个分支的值）
-  // 如果 then 分支有值，使用它；否则使用 else 分支的值；如果都没有，使用 0
-  let then_value = if then_last_temp != "" { then_last_temp } else { "0" }
   let else_value = if else_last_temp != "" { else_last_temp } else { "0" }
-  let phi_code = "  " +
-    result_temp +
-    " = phi i32 [ " +
-    then_value +
-    ", %" +
-    then_label +
-    " ], [ " +
-    else_value +
-    ", %" +
-    else_label +
-    " ]\n"
+  let else_store_code = "  store i32 " + else_value + ", i32* " + result_ptr + "\n"
+  let else_br_code = else_store_code + "  br label %" + merge_label + "\n"
+
+  let result_temp = gen.next_temp()
+  let load_code = "  " + result_temp + " = load i32, i32* " + result_ptr + "\n"
 
   // 组合所有代码
-  let code = cond_code +
+  let code = alloc_code +
+    cond_code +
     cmp_code +
     br_code +
     then_label +
@@ -1133,7 +1126,7 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, String) {
     else_br_code +
     merge_label +
     ":\n" +
-    phi_code
+    load_code
   (code, result_temp)
 }
 

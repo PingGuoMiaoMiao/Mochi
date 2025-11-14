@@ -1362,6 +1362,7 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
   }
   let mut arrow : Token? = None
   let mut return_type : Token? = None
+  let mut return_type_is_function = false
   match self.peek().kind {
     TokenKind::Arrow => {
       arrow = Some(self.advance())
@@ -1377,7 +1378,10 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                 TokenKind::Arrow | TokenKind::ThinArrow => {
                   let _ = self.advance() // consume ->
                   match self.peek().kind {
-                    TokenKind::Ident => return_type = Some(self.advance()) // consume return type
+                    TokenKind::Ident => {
+                      return_type = Some(self.advance()) // consume return type
+                      return_type_is_function = true
+                    }
                     _ =>
                       self.error(
                         self.peek(),
@@ -1451,7 +1455,10 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                     TokenKind::Arrow | TokenKind::ThinArrow => {
                       let _ = self.advance() // consume ->
                       match self.peek().kind {
-                        TokenKind::Ident => return_type = Some(self.advance()) // consume return type
+                        TokenKind::Ident => {
+                          return_type = Some(self.advance()) // consume return type
+                          return_type_is_function = true
+                        }
                         _ =>
                           self.error(
                             self.peek(),
@@ -1494,7 +1501,10 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                 TokenKind::Arrow | TokenKind::ThinArrow => {
                   let _ = self.advance() // consume ->
                   match self.peek().kind {
-                    TokenKind::Ident => return_type = Some(self.advance()) // consume return type
+                    TokenKind::Ident => {
+                      return_type = Some(self.advance()) // consume return type
+                      return_type_is_function = true
+                    }
                     _ =>
                       self.error(
                         self.peek(),
@@ -1568,7 +1578,10 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
                     TokenKind::Arrow | TokenKind::ThinArrow => {
                       let _ = self.advance() // consume ->
                       match self.peek().kind {
-                        TokenKind::Ident => return_type = Some(self.advance()) // consume return type
+                        TokenKind::Ident => {
+                          return_type = Some(self.advance()) // consume return type
+                          return_type_is_function = true
+                        }
                         _ =>
                           self.error(
                             self.peek(),
@@ -1743,6 +1756,7 @@ fn Parser::parse_function_declaration(self : Parser) -> Stmt? {
     close_paren,
     arrow,
     return_type,
+    return_type_is_function,
     open_brace: match open_brace {
       Some(brace) => brace
       None => {
