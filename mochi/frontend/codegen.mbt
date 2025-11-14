@@ -64,49 +64,49 @@ fn get_builtin_function(name : String) -> BuiltinFuncInfo? {
   match name {
     "print_int" =>
       Some({
-        ir_name: "@print_int",
+        ir_name: "@minimbt_print_int",
         return_type: "void",
         is_void: true,
         param_types: builtin_param_types_one("i32"),
       })
     "print_double" =>
       Some({
-        ir_name: "@print_double",
+        ir_name: "@minimbt_print_double",
         return_type: "void",
         is_void: true,
         param_types: builtin_param_types_one("double"),
       })
     "print_endline" =>
       Some({
-        ir_name: "@print_endline",
+        ir_name: "@minimbt_print_endline",
         return_type: "void",
         is_void: true,
         param_types: builtin_param_types_none(),
       })
     "int_of_float" =>
       Some({
-        ir_name: "@int_of_float",
+        ir_name: "@minimbt_int_of_float",
         return_type: "i32",
         is_void: false,
         param_types: builtin_param_types_one("double"),
       })
     "float_of_int" =>
       Some({
-        ir_name: "@float_of_int",
+        ir_name: "@minimbt_float_of_int",
         return_type: "double",
         is_void: false,
         param_types: builtin_param_types_one("i32"),
       })
     "truncate" =>
       Some({
-        ir_name: "@truncate",
+        ir_name: "@minimbt_truncate",
         return_type: "i32",
         is_void: false,
         param_types: builtin_param_types_one("double"),
       })
     "abs_float" =>
       Some({
-        ir_name: "@abs_float",
+        ir_name: "@minimbt_abs_float",
         return_type: "double",
         is_void: false,
         param_types: builtin_param_types_one("double"),
