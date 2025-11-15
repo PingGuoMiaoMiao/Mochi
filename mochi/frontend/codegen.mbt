@@ -6,7 +6,7 @@
 // 1. 核心数据结构：CodegenContext (LLVMGen) - 管理变量、标签、结构体定义等
 // 2. 模块化函数：每个 AST 节点类型对应一个生成函数
 // 3. 表达式生成：递归生成，返回 (code, temp_var)
-// 4. 语句生成：顺序生成，返回 (code, last_expr_temp)
+// 4. 语句生成：顺序生成，返回 (code, last_statement_value)
 // 5. 控制流：使用基本块和 phi 节点实现 SSA 形式
 
 ///|
@@ -65,6 +65,32 @@ fn expr_value_with_closure(
   arity : Int,
 ) -> ExprValue {
   { code, value, llvm_type, closure_arity: arity }
+}
+
+///|
+priv struct StatementValue {
+  value : String
+  llvm_type : String
+}
+
+///|
+fn statement_value(value : String, llvm_type : String) -> StatementValue {
+  { value, llvm_type }
+}
+
+///|
+fn empty_statement_value() -> StatementValue {
+  statement_value("", "i32")
+}
+
+///|
+fn statement_value_from_expr(value : ExprValue) -> StatementValue {
+  statement_value(value.value, value.llvm_type)
+}
+
+///|
+fn statement_value_has_value(value : StatementValue) -> Bool {
+  value.value != ""
 }
 
 ///|
@@ -611,12 +637,60 @@ fn closure_function_pointer_type(function_stmt : FunctionStmt) -> String {
 }
 
 ///|
+fn closure_function_label(entry : ClosureEntry) -> String {
+  if entry.parent_id == -1 {
+    "@closure_wrapper_" + entry.id.to_string()
+  } else {
+    "@closure_fn_" + entry.id.to_string()
+  }
+}
+
+///|
+fn generate_top_level_closure_wrapper(
+  function_stmt : FunctionStmt,
+  entry : ClosureEntry,
+  target_name : String,
+  return_type : String,
+) -> String {
+  if entry.parent_id != -1 || return_type != "i32" {
+    return ""
+  }
+  let wrapper_name = closure_function_label(entry)
+  let param_count = function_stmt.parameters.length()
+  let mut param_list = "i8* %env"
+  let mut call_params = ""
+  let mut index = 0
+  while index < param_count {
+    let arg_name = "%" + index.to_string()
+    param_list = param_list + ", i32 " + arg_name
+    if call_params == "" {
+      call_params = "i32 " + arg_name
+    } else {
+      call_params = call_params + ", i32 " + arg_name
+    }
+    index = index + 1
+  }
+  let mut output = "define i32 " + wrapper_name + "(" + param_list + ") {\n"
+  output = output + "entry:\n"
+  let mut call_line = ""
+  if call_params == "" {
+    call_line = "  %result = call i32 " + target_name + "()\n"
+  } else {
+    call_line = "  %result = call i32 " +
+      target_name +
+      "(" +
+      call_params +
+      ")\n"
+  }
+  output = output + call_line
+  output = output + "  ret i32 %result\n"
+  output + "}\n\n"
+}
+
+///|
 fn generate_closure_env_type_definitions(metadata : ClosureMetadata) -> String {
   let mut definitions = ""
   for entry in metadata.entries {
-    if entry.parent_id == -1 {
-      continue
-    }
     let field_count = entry.free_vars.length()
     if field_count == 0 {
       continue
@@ -656,11 +730,9 @@ fn int_array_contains(array : Array[Int], value : Int) -> Bool {
 fn generate_closure_struct_definitions(metadata : ClosureMetadata) -> String {
   let arities : Array[Int] = Array::new()
   for entry in metadata.entries {
-    if entry.parent_id != -1 {
-      let arity = entry.function_stmt.parameters.length()
-      if !int_array_contains(arities, arity) {
-        arities.push(arity)
-      }
+    let arity = entry.function_stmt.parameters.length()
+    if !int_array_contains(arities, arity) {
+      arities.push(arity)
     }
   }
   let mut definitions = ""
@@ -1310,7 +1382,7 @@ fn llvm_gen_main_function(
     gen.struct_defs.push(struct_def)
   }
   gen.current_return_type = "void"
-  let (body_code, _last_expr_temp) = llvm_gen_statements(gen, main_statements)
+  let (body_code, _) = llvm_gen_statements(gen, main_statements)
   output = output + body_code
   // main 函数返回 void（匹配 riscv_rt/start.c）
   // 检查函数体是否已经包含 return 语句
@@ -1329,25 +1401,22 @@ fn llvm_gen_main_function(
 fn llvm_gen_statements(
   gen : LLVMGen,
   statements : Array[Stmt],
-) -> (String, String) {
+) -> (String, StatementValue) {
   let mut code = ""
-  let mut last_expr_temp = ""
+  let mut last_value = empty_statement_value()
   for stmt in statements {
     match stmt.kind {
       StmtKind::Let(let_stmt) => {
-        let (stmt_code, value_temp) = llvm_gen_let(gen, let_stmt)
+        let (stmt_code, stmt_value) = llvm_gen_let(gen, let_stmt)
         code = code + stmt_code
-        if let_stmt.name.lexeme == "_" {
-          last_expr_temp = value_temp
+        if statement_value_has_value(stmt_value) {
+          last_value = stmt_value
         }
       }
       StmtKind::ExprStmt(expr) => {
-        let (expr_code, expr_temp) = llvm_gen_expr(gen, expr)
-        code = code + expr_code
-        if expr_code == "" && expr_temp != "" {
-          code = code + "  " + expr_temp + " = add i32 0, 0\n"
-        }
-        last_expr_temp = expr_temp
+        let expr_value = llvm_gen_expr_value(gen, expr)
+        code = code + expr_value.code
+        last_value = statement_value_from_expr(expr_value)
       }
       StmtKind::Return(return_stmt) => {
         let ret_code = llvm_gen_return(
@@ -1356,26 +1425,28 @@ fn llvm_gen_statements(
           gen.current_return_type,
         )
         code = code + ret_code
-        last_expr_temp = ""
+        last_value = empty_statement_value()
         break
       }
       StmtKind::Assign(assign_stmt) => {
-        let (assign_code, value_temp) = llvm_gen_assign(gen, assign_stmt)
+        let (assign_code, assign_value) = llvm_gen_assign(gen, assign_stmt)
         code = code + assign_code
-        last_expr_temp = value_temp
+        if statement_value_has_value(assign_value) {
+          last_value = assign_value
+        }
       }
       StmtKind::While(while_stmt) => {
-        let (while_code, while_last_temp) = llvm_gen_while(gen, while_stmt)
+        let (while_code, while_value) = llvm_gen_while(gen, while_stmt)
         code = code + while_code
-        if while_last_temp != "" {
-          last_expr_temp = while_last_temp
+        if statement_value_has_value(while_value) {
+          last_value = while_value
         }
       }
       StmtKind::If(if_stmt) => {
-        let (if_code, if_last_temp) = llvm_gen_if(gen, if_stmt)
+        let (if_code, if_value) = llvm_gen_if(gen, if_stmt)
         code = code + if_code
-        if if_last_temp != "" {
-          last_expr_temp = if_last_temp
+        if statement_value_has_value(if_value) {
+          last_value = if_value
         }
       }
       StmtKind::Function(_function_stmt) =>
@@ -1384,7 +1455,7 @@ fn llvm_gen_statements(
       _ => ()
     }
   }
-  (code, last_expr_temp)
+  (code, last_value)
 }
 
 ///|
@@ -1464,10 +1535,8 @@ fn llvm_gen_literal(gen : LLVMGen, token : Token) -> ExprValue {
         }
       }
     TokenKind::LParen => {
-      // Unit literal: () - 表示为 i32 0
-      let temp = gen.next_temp()
-      let code = "  " + temp + " = add i32 0, 0\n"
-      expr_value(code, temp, "i32")
+      // Unit literal: () - 直接使用常量 0
+      expr_value("", "0", "i32")
     }
     _ => {
       let temp = gen.next_temp()
@@ -1501,10 +1570,14 @@ fn llvm_gen_ident(gen : LLVMGen, token : Token) -> ExprValue {
     None =>
       match gen.find_local_function_entry(token.lexeme) {
         Some(entry) => llvm_gen_create_closure(gen, entry)
-        None => {
-          let temp = gen.next_temp()
-          expr_value("", temp, "i32")
-        }
+        None =>
+          match gen.find_top_level_function_entry(token.lexeme) {
+            Some(entry) => llvm_gen_create_closure(gen, entry)
+            None => {
+              let temp = gen.next_temp()
+              expr_value("", temp, "i32")
+            }
+          }
       }
   }
 }
@@ -1629,8 +1702,8 @@ fn llvm_gen_create_closure(gen : LLVMGen, entry : ClosureEntry) -> ExprValue {
   code = code +
     "  store " +
     fn_pointer_type +
-    " @closure_fn_" +
-    entry.id.to_string() +
+    " " +
+    closure_function_label(entry) +
     ", " +
     fn_pointer_type +
     "* " +
@@ -1878,10 +1951,12 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
   // 生成参数代码
   let mut args_code = ""
   let args_temps : Array[String] = Array::new()
+  let args_types : Array[String] = Array::new()
   for arg in call_expr.arguments {
     let arg_value = llvm_gen_expr_value(gen, arg)
     args_code = args_code + arg_value.code
     args_temps.push(arg_value.value)
+    args_types.push(arg_value.llvm_type)
   }
 
   // 获取函数名和函数类型
@@ -1892,8 +1967,9 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
   let mut builtin_param_types : Array[String]? = None
   let mut return_closure_arity = -1
   match call_expr.callee.kind {
-    ExprKind::Ident(token) =>
-      match gen.get_var_entry(token.lexeme) {
+    ExprKind::Ident(token) => {
+      let name = token.lexeme
+      match gen.get_var_entry(name) {
         Some(_) => {
           let callee_value = llvm_gen_ident(gen, token)
           if callee_value.closure_arity >= 0 {
@@ -1905,11 +1981,22 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
           }
         }
         None => {
-          let name = token.lexeme
+          match gen.find_local_function_entry(name) {
+            Some(entry) => {
+              let callee_value = llvm_gen_create_closure(gen, entry)
+              return llvm_gen_call_closure(
+                gen, callee_value, args_code, args_temps,
+              )
+            }
+            None => ()
+          }
           match gen.find_function_entry_by_name(name, -1) {
             Some(entry) =>
               if entry.function_stmt.return_type_is_function {
                 return_closure_arity = entry.function_stmt.function_return_param_types.length()
+                return_type = closure_struct_pointer_type_for_arity(
+                  return_closure_arity,
+                )
               }
             None => ()
           }
@@ -1924,6 +2011,7 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
           }
         }
       }
+    }
     ExprKind::FieldAccess(field_access) => {
       let is_array_make = match field_access.object.kind {
         ExprKind::Ident(token) => token.lexeme == "Array"
@@ -1982,8 +2070,32 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
   let mut param_type_list = ""
   let mut index = 0
   while index < args_count {
-    let arg_temp = args_temps[index]
+    let mut arg_temp = args_temps[index]
     let param_type = param_types_for_call[index]
+    let arg_type = args_types[index]
+    if param_type == "i32" && arg_type != "i32" {
+      let cast_temp = gen.next_temp()
+      let cast_code = if arg_type.contains("*") {
+        "  " +
+          cast_temp +
+          " = ptrtoint " +
+          arg_type +
+          " " +
+          arg_temp +
+          " to i32\n"
+      } else {
+        "  " +
+          cast_temp +
+          " = bitcast " +
+          arg_type +
+          " " +
+          arg_temp +
+          " to i32\n"
+      }
+      args_code = args_code + cast_code
+      arg_temp = cast_temp
+      args_temps[index] = arg_temp
+    }
     let entry = param_type + " " + arg_temp
     if param_type_list == "" {
       param_type_list = entry
@@ -2013,24 +2125,7 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
       ")\n"
     let code = args_code + call_code
 
-    // 如果返回类型是指针类型（如 i32*），需要转换为 i32（通过 ptrtoint）
-    // 但为了简化，我们暂时假设所有函数调用都返回 i32
-    // 对于 Array::make，它返回 i32*，但我们暂时将其转换为 i32
-    if return_type == "i32*" {
-      // 指针类型，需要转换为 i32（通过 ptrtoint）
-      let ptr_temp = result_temp
-      let int_temp = gen.next_temp()
-      let ptrtoint_code = "  " +
-        int_temp +
-        " = ptrtoint i32* " +
-        ptr_temp +
-        " to i32\n"
-      expr_value(code + ptrtoint_code, int_temp, "i32")
-    } else if return_closure_arity >= 0 {
-      expr_value_with_closure(
-        code, result_temp, return_type, return_closure_arity,
-      )
-    } else if return_closure_arity >= 0 {
+    if return_closure_arity >= 0 {
       expr_value_with_closure(
         code, result_temp, return_type, return_closure_arity,
       )
@@ -2106,13 +2201,13 @@ fn llvm_gen_if_expr(gen : LLVMGen, if_expr : IfExpr) -> ExprValue {
 ///|
 // 模块6: let 语句生成
 // 支持：变量分配、内存管理、下划线变量（忽略值）
-fn llvm_gen_let(gen : LLVMGen, let_stmt : LetStmt) -> (String, String) {
+fn llvm_gen_let(gen : LLVMGen, let_stmt : LetStmt) -> (String, StatementValue) {
   let value = llvm_gen_expr_value(gen, let_stmt.value)
 
   // 检查是否是下划线变量（忽略值）
   if let_stmt.name.lexeme == "_" {
     // 下划线变量：只生成值的代码，不分配变量
-    (value.code, value.value)
+    (value.code, statement_value_from_expr(value))
   } else {
     // 普通变量：分配内存并存储值
     let var_temp = gen.next_temp()
@@ -2137,8 +2232,8 @@ fn llvm_gen_let(gen : LLVMGen, let_stmt : LetStmt) -> (String, String) {
       "* " +
       var_temp +
       "\n"
-    // 返回变量指针（用于后续使用）
-    (code, value.value)
+    // let 语句本身不返回值
+    (code, empty_statement_value())
   }
 }
 
@@ -2150,7 +2245,10 @@ fn llvm_gen_let(gen : LLVMGen, let_stmt : LetStmt) -> (String, String) {
 // 支持：变量赋值、数组索引赋值
 // 赋值语句：target = value
 // 注意：target 可以是 Ident（变量）或 Index（数组索引）
-fn llvm_gen_assign(gen : LLVMGen, assign_stmt : AssignStmt) -> (String, String) {
+fn llvm_gen_assign(
+  gen : LLVMGen,
+  assign_stmt : AssignStmt,
+) -> (String, StatementValue) {
   // 生成 value 表达式的代码
   let value = llvm_gen_expr_value(gen, assign_stmt.value)
 
@@ -2172,10 +2270,10 @@ fn llvm_gen_assign(gen : LLVMGen, assign_stmt : AssignStmt) -> (String, String) 
             "\n"
           let code = value.code + store_code
           // 赋值语句返回赋值后的值
-          (code, value.value)
+          (code, statement_value_from_expr(value))
         }
         // 变量未定义，错误处理（暂时返回空代码）
-        None => ("", "")
+        None => ("", empty_statement_value())
       }
     // 数组索引赋值：arr[i] = value
     ExprKind::Index(index_expr) => {
@@ -2210,10 +2308,10 @@ fn llvm_gen_assign(gen : LLVMGen, assign_stmt : AssignStmt) -> (String, String) 
         gep_code +
         store_code
       // 赋值语句返回赋值后的值
-      (code, value.value)
+      (code, statement_value_from_expr(value))
     }
     // 其他类型不支持赋值
-    _ => ("", "")
+    _ => ("", empty_statement_value())
   }
 }
 
@@ -2222,7 +2320,7 @@ fn llvm_gen_assign(gen : LLVMGen, assign_stmt : AssignStmt) -> (String, String) 
 // 支持：if 语句（语句体）、else 分支、控制流
 // if 语句：if condition { then_body } else { else_body }
 // 注意：if 语句的 body 是语句数组，需要生成最后一个表达式的值
-fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, String) {
+fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, StatementValue) {
   // 生成条件表达式
   let (cond_code, cond_temp) = llvm_gen_expr(gen, if_stmt.condition)
 
@@ -2247,8 +2345,15 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, String) {
     "\n"
 
   // 生成 then 分支（语句数组）
-  let (then_code, then_last_temp) = llvm_gen_statements(gen, if_stmt.then_body)
-  let then_value = if then_last_temp != "" { then_last_temp } else { "0" }
+  let (then_code, then_result) = llvm_gen_statements(gen, if_stmt.then_body)
+  let mut then_value = if statement_value_has_value(then_result) {
+    then_result.value
+  } else {
+    "0"
+  }
+  if then_value.has_prefix("%") && !then_code.contains(then_value + " =") {
+    then_value = "0"
+  }
   let then_store_code = "  store i32 " +
     then_value +
     ", i32* " +
@@ -2257,11 +2362,18 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, String) {
   let then_br_code = then_store_code + "  br label %" + merge_label + "\n"
 
   // 生成 else 分支（如果有）
-  let (else_code, else_last_temp) = match if_stmt.else_body.length() {
-    0 => ("", "")
+  let (else_code, else_result) = match if_stmt.else_body.length() {
+    0 => ("", empty_statement_value())
     _ => llvm_gen_statements(gen, if_stmt.else_body)
   }
-  let else_value = if else_last_temp != "" { else_last_temp } else { "0" }
+  let mut else_value = if statement_value_has_value(else_result) {
+    else_result.value
+  } else {
+    "0"
+  }
+  if else_value.has_prefix("%") && !else_code.contains(else_value + " =") {
+    else_value = "0"
+  }
   let else_store_code = "  store i32 " +
     else_value +
     ", i32* " +
@@ -2287,7 +2399,7 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, String) {
     merge_label +
     ":\n" +
     load_code
-  (code, result_temp)
+  (code, statement_value(result_temp, "i32"))
 }
 
 ///|
@@ -2296,7 +2408,10 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, String) {
 // while 循环：while condition { body }
 // 注意：while 循环的 body 是语句数组，循环后返回最后一个表达式的值（如果有）
 // while 循环通常不返回值，返回 Unit (0)
-fn llvm_gen_while(gen : LLVMGen, while_stmt : WhileStmt) -> (String, String) {
+fn llvm_gen_while(
+  gen : LLVMGen,
+  while_stmt : WhileStmt,
+) -> (String, StatementValue) {
   // 生成标签
   let loop_label = gen.next_label()
   let body_label = gen.next_label()
@@ -2339,7 +2454,7 @@ fn llvm_gen_while(gen : LLVMGen, while_stmt : WhileStmt) -> (String, String) {
     exit_code
 
   // while 循环返回空字符串（表示没有返回值，或返回 Unit）
-  (code, "")
+  (code, empty_statement_value())
 }
 
 ///|
@@ -2363,6 +2478,17 @@ fn llvm_gen_return(
       } else {
         "  ret " + return_type + " 0\n"
       }
+  }
+}
+
+///|
+fn default_return_value(return_type : String) -> String {
+  if return_type == "void" {
+    "  ret void\n"
+  } else if return_type.contains("*") {
+    "  ret " + return_type + " null\n"
+  } else {
+    "  ret " + return_type + " 0\n"
   }
 }
 
@@ -2508,7 +2634,7 @@ fn llvm_gen_function(
   if return_closure_arity >= 0 {
     gen.current_return_type = return_type
   }
-  let (body_code, last_expr_temp) = llvm_gen_statements(gen, function_stmt.body)
+  let (body_code, last_value) = llvm_gen_statements(gen, function_stmt.body)
   output = output + body_code
 
   // 检查函数体是否已经包含 return 语句
@@ -2520,13 +2646,31 @@ fn llvm_gen_function(
     if is_main {
       // main 函数返回 void（匹配 riscv_rt/start.c）
       output = output + "  ret void\n"
-    } else if last_expr_temp != "" {
-      output = output + "  ret i32 " + last_expr_temp + "\n"
+    } else if statement_value_has_value(last_value) {
+      output = output +
+        "  ret " +
+        last_value.llvm_type +
+        " " +
+        last_value.value +
+        "\n"
     } else {
-      output = output + "  ret i32 0\n"
+      output = output + default_return_value(gen.current_return_type)
     }
   }
   output = output + "}\n\n"
+  if !is_nested_function {
+    match function_entry {
+      Some(entry) => {
+        let wrapper_code = generate_top_level_closure_wrapper(
+          function_stmt, entry, func_name, return_type,
+        )
+        if wrapper_code != "" {
+          output = output + wrapper_code
+        }
+      }
+      None => ()
+    }
+  }
   let _ = closure_metadata.get_free_vars(function_stmt)
   output
 }
@@ -2550,25 +2694,8 @@ fn llvm_gen_index(gen : LLVMGen, index_expr : IndexExpr) -> ExprValue {
   // 生成索引表达式的代码
   let index_value = llvm_gen_expr_value(gen, index_expr.index)
 
-  // 获取数组指针
-  // 如果 array_temp 是通过 load 得到的 i32 值，但它实际上应该是 i32* 指针
-  // 我们需要检查 array_expr 是否是标识符，如果是，直接从 var_map 获取指针
-  let array_ptr_temp = match index_expr.array.kind {
-    ExprKind::Ident(token) => {
-      // 如果是标识符，直接获取变量的地址（指针）
-      let var_name = gen.get_var_name(token.lexeme)
-      if var_name != "" {
-        // 变量已定义，直接使用变量地址（它是指针）
-        var_name
-      } else {
-        // 变量未定义，使用 array_temp（可能是参数或其他）
-        // 如果 array_temp 是 i32 值，需要将它转换为指针
-        // 暂时假设 array_temp 已经是指针类型
-        array_value.value
-      }
-    }
-    _ => array_value.value
-  }
+  // 数组指针（应为 i32*）
+  let array_ptr_temp = array_value.value
 
   // 使用 getelementptr 计算元素地址
   // getelementptr i32, i32* %array_ptr, i32 %index
@@ -2589,14 +2716,7 @@ fn llvm_gen_index(gen : LLVMGen, index_expr : IndexExpr) -> ExprValue {
     elem_ptr_temp +
     "\n"
 
-  // 组合所有代码
-  // 如果 array_ptr_temp == array_temp，不需要额外的代码
-  let code = if array_ptr_temp == array_value.value {
-    array_value.code + index_value.code + gep_code + load_code
-  } else {
-    // 如果 array_ptr_temp != array_temp，说明我们使用了 var_name，不需要 array_code
-    index_value.code + gep_code + load_code
-  }
+  let code = array_value.code + index_value.code + gep_code + load_code
   expr_value(code, result_temp, "i32")
 }
 
