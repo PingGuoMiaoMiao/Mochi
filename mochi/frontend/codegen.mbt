@@ -443,6 +443,7 @@ priv struct LLVMGen {
   is_top_level_context : Bool
   tuple_metadata : Array[(String, Int)]
   current_env_param : String
+  captured_var_registry : Array[(Int, String, String, Int)]
 }
 
 ///|
@@ -450,6 +451,7 @@ fn LLVMGen::new(
   metadata : ClosureMetadata,
   global_vars : Array[GlobalVarInfo],
   is_top_level : Bool,
+  captured_var_registry : Array[(Int, String, String, Int)],
 ) -> LLVMGen {
   {
     var_counter: 0,
@@ -465,6 +467,7 @@ fn LLVMGen::new(
     is_top_level_context: is_top_level,
     tuple_metadata: Array::new(),
     current_env_param: "",
+    captured_var_registry,
   }
 }
 
@@ -476,6 +479,7 @@ fn LLVMGen::new_with_function(
   return_type : String,
   global_vars : Array[GlobalVarInfo],
   is_nested_function : Bool,
+  captured_var_registry : Array[(Int, String, String, Int)],
 ) -> LLVMGen {
   {
     var_counter: 0,
@@ -495,6 +499,7 @@ fn LLVMGen::new_with_function(
     } else {
       ""
     },
+    captured_var_registry,
   }
 }
 
@@ -510,6 +515,45 @@ fn LLVMGen::get_var_entry(
       return Some((pair.1, pair.2, pair.3))
     }
     index = index - 1
+  }
+  None
+}
+
+///|
+fn LLVMGen::record_captured_var_type(
+  self : LLVMGen,
+  func_id : Int,
+  name : String,
+  llvm_type : String,
+  closure_arity : Int,
+) -> Unit {
+  let mut index = 0
+  while index < self.captured_var_registry.length() {
+    if self.captured_var_registry[index].0 == func_id &&
+      self.captured_var_registry[index].1 == name {
+      self.captured_var_registry[index] = (
+        func_id,
+        name,
+        llvm_type,
+        closure_arity,
+      )
+      return
+    }
+    index = index + 1
+  }
+  self.captured_var_registry.push((func_id, name, llvm_type, closure_arity))
+}
+
+///|
+fn LLVMGen::get_captured_var_type(
+  self : LLVMGen,
+  func_id : Int,
+  name : String,
+) -> (String, Int)? {
+  for entry in self.captured_var_registry {
+    if entry.0 == func_id && entry.1 == name {
+      return Some((entry.2, entry.3))
+    }
   }
   None
 }
@@ -929,6 +973,21 @@ fn closure_struct_pointer_type_for_arity(param_count : Int) -> String {
 }
 
 ///|
+fn function_param_llvm_type(param : FunctionParam) -> (String, Int) {
+  if param.is_function_type {
+    let arity = param.function_param_types.length()
+    (
+      closure_struct_pointer_type_for_arity(arity),
+      arity,
+    )
+  } else if param.is_tuple_type {
+    ("i32*", -1)
+  } else {
+    ("i32", -1)
+  }
+}
+
+///|
 fn closure_function_pointer_type_for_arity(arity : Int) -> String {
   let mut type_str = "i32 (i8*"
   let mut index = 0
@@ -1008,10 +1067,10 @@ fn generate_closure_env_type_definitions(metadata : ClosureMetadata) -> String {
     let mut index = 0
     while index < field_count {
       if first {
-        line = line + "i32"
+        line = line + "i64"
         first = false
       } else {
-        line = line + ", i32"
+        line = line + ", i64"
       }
       index = index + 1
     }
@@ -1595,7 +1654,8 @@ fn collect_global_vars(
   closure_metadata : ClosureMetadata,
 ) -> Array[GlobalVarInfo] {
   let globals : Array[GlobalVarInfo] = Array::new()
-  let gen = LLVMGen::new(closure_metadata.clone(), globals, true)
+  let registry : Array[(Int, String, String, Int)] = Array::new()
+  let gen = LLVMGen::new(closure_metadata.clone(), globals, true, registry)
   for stmt in statements {
     match stmt.kind {
       StmtKind::Let(let_stmt) => ignore(llvm_gen_let(gen, let_stmt))
@@ -1609,6 +1669,7 @@ fn collect_global_vars(
 fn generate_llvm(statements : Array[Stmt]) -> String {
   let mut output = "target triple = \"riscv64-unknown-linux-gnu\"\n\n"
   let closure_metadata = analyze_closures(statements)
+  let captured_var_registry : Array[(Int, String, String, Int)] = Array::new()
   let global_vars = collect_global_vars(statements, closure_metadata.clone())
 
   // 生成外部函数声明
@@ -1660,7 +1721,11 @@ fn generate_llvm(statements : Array[Stmt]) -> String {
       has_main_function = true
     }
     let func_code = llvm_gen_function(
-      struct_defs_map, function_stmt, closure_metadata, global_vars,
+      struct_defs_map,
+      function_stmt,
+      closure_metadata,
+      global_vars,
+      captured_var_registry,
     )
     output = output + func_code
   }
@@ -1678,14 +1743,23 @@ fn generate_llvm(statements : Array[Stmt]) -> String {
   if main_statements.length() > 0 {
     if has_main_function {
       let init_code = llvm_gen_top_level_function(
-        "@minimbt_init_globals", struct_defs_map, main_statements, closure_metadata,
+        "@minimbt_init_globals",
+        struct_defs_map,
+        main_statements,
+        closure_metadata,
         global_vars,
+        captured_var_registry,
       )
       output = output + init_code
       initializer_emitted = true
     } else {
       let main_code = llvm_gen_top_level_function(
-        "@minimbt_main", struct_defs_map, main_statements, closure_metadata, global_vars,
+        "@minimbt_main",
+        struct_defs_map,
+        main_statements,
+        closure_metadata,
+        global_vars,
+        captured_var_registry,
       )
       output = output + main_code
       emitted_minimbt_main = true
@@ -1729,10 +1803,16 @@ fn llvm_gen_top_level_function(
   main_statements : Array[Stmt],
   closure_metadata : ClosureMetadata,
   global_vars : Array[GlobalVarInfo],
+  captured_var_registry : Array[(Int, String, String, Int)],
 ) -> String {
   let mut output = "define void " + function_name + "() {\n"
   output = output + "entry:\n"
-  let gen = LLVMGen::new(closure_metadata.clone(), global_vars, true)
+  let gen = LLVMGen::new(
+    closure_metadata.clone(),
+    global_vars,
+    true,
+    captured_var_registry,
+  )
   for struct_def in struct_defs_map {
     gen.struct_defs.push(struct_def)
   }
@@ -2000,7 +2080,7 @@ fn llvm_gen_create_closure(gen : LLVMGen, entry : ClosureEntry) -> ExprValue {
   // 构建环境
   let mut env_ptr_value = "null"
   if entry.free_vars.length() > 0 {
-    let env_size = entry.free_vars.length() * 4
+    let env_size = entry.free_vars.length() * 8
     let env_raw = gen.next_temp()
     code = code +
       "  " +
@@ -2034,8 +2114,10 @@ fn llvm_gen_create_closure(gen : LLVMGen, entry : ClosureEntry) -> ExprValue {
         ", i32 0, i32 " +
         index.to_string() +
         "\n"
+      let mut recorded_type = ""
+      let mut recorded_closure_arity = -1
       match gen.get_var_entry(var_name) {
-        Some((var_ptr, var_type, _)) => {
+        Some((var_ptr, var_type, var_closure_arity)) => {
           let loaded = gen.next_temp()
           code = code +
             "  " +
@@ -2047,8 +2129,19 @@ fn llvm_gen_create_closure(gen : LLVMGen, entry : ClosureEntry) -> ExprValue {
             "* " +
             var_ptr +
             "\n"
+          recorded_type = var_type
+          recorded_closure_arity = var_closure_arity
           let mut stored_value = loaded
-          if var_type != "i32" {
+          if var_type == "i32" {
+            let extend_temp = gen.next_temp()
+            code = code +
+              "  " +
+              extend_temp +
+              " = sext i32 " +
+              loaded +
+              " to i64\n"
+            stored_value = extend_temp
+          } else {
             let cast_temp = gen.next_temp()
             code = code +
               "  " +
@@ -2057,17 +2150,73 @@ fn llvm_gen_create_closure(gen : LLVMGen, entry : ClosureEntry) -> ExprValue {
               var_type +
               " " +
               loaded +
-              " to i32\n"
+              " to i64\n"
             stored_value = cast_temp
           }
           code = code +
-            "  store i32 " +
+            "  store i64 " +
             stored_value +
-            ", i32* " +
+            ", i64* " +
             field_ptr +
             "\n"
         }
-        None => ()
+        None => {
+          match gen.get_global_var(var_name) {
+            Some(global_info) => {
+              let global_symbol = LLVMGen::global_var_symbol(global_info.name)
+              let loaded = gen.next_temp()
+              code = code +
+                "  " +
+                loaded +
+                " = load " +
+                global_info.llvm_type +
+                ", " +
+                global_info.llvm_type +
+                "* " +
+                global_symbol +
+                "\n"
+              recorded_type = global_info.llvm_type
+              recorded_closure_arity = global_info.closure_arity
+              let mut stored_value = loaded
+              if global_info.llvm_type == "i32" {
+                let extend_temp = gen.next_temp()
+                code = code +
+                  "  " +
+                  extend_temp +
+                  " = sext i32 " +
+                  loaded +
+                  " to i64\n"
+                stored_value = extend_temp
+              } else {
+                let cast_temp = gen.next_temp()
+                code = code +
+                  "  " +
+                  cast_temp +
+                  " = ptrtoint " +
+                  global_info.llvm_type +
+                  " " +
+                  loaded +
+                  " to i64\n"
+                stored_value = cast_temp
+              }
+              code = code +
+                "  store i64 " +
+                stored_value +
+                ", i64* " +
+                field_ptr +
+                "\n"
+            }
+            None => ()
+          }
+        }
+      }
+      if recorded_type != "" {
+        gen.record_captured_var_type(
+          entry.id,
+          var_name,
+          recorded_type,
+          recorded_closure_arity,
+        )
       }
       index = index + 1
     }
@@ -2391,7 +2540,23 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
               gen, callee_value, args_code, args_temps,
             )
           } else {
-            func_name = "@unknown"
+            match gen.find_top_level_function_entry(name) {
+              Some(entry) => {
+                direct_function_entry = Some(entry)
+                if entry.function_stmt.return_type_is_function {
+                  return_closure_arity = entry.function_stmt.function_return_param_types.length()
+                  return_type = closure_struct_pointer_type_for_arity(
+                    return_closure_arity,
+                  )
+                } else if entry.function_stmt.return_type_is_tuple {
+                  return_type = "i32*"
+                  return_tuple_count =
+                    entry.function_stmt.return_tuple_element_types.length()
+                }
+                func_name = "@" + name
+              }
+              None => func_name = "@unknown"
+            }
           }
         }
         None => {
@@ -3187,6 +3352,7 @@ fn llvm_gen_function(
   function_stmt : FunctionStmt,
   closure_metadata : ClosureMetadata,
   global_vars : Array[GlobalVarInfo],
+  captured_var_registry : Array[(Int, String, String, Int)],
 ) -> String {
   let func_id = function_id(function_stmt)
   let function_entry = closure_metadata.get_entry(func_id)
@@ -3222,7 +3388,7 @@ fn llvm_gen_function(
   let mut param_index = 0
   for param in function_stmt.parameters {
     let param_name = "%" + param_index.to_string()
-    let param_type = if param.is_tuple_type { "i32*" } else { "i32" }
+    let (param_type, _) = function_param_llvm_type(param)
     let entry = param_type + " " + param_name
     if first {
       param_list = entry
@@ -3259,6 +3425,7 @@ fn llvm_gen_function(
     return_type,
     global_vars,
     is_nested_function,
+    captured_var_registry,
   )
   // 复制结构体定义到 gen
   for struct_def in struct_defs_map {
@@ -3269,10 +3436,15 @@ fn llvm_gen_function(
   let mut param_index = 0
   for param in function_stmt.parameters {
     let param_arg = "%" + param_index.to_string()
-    let param_type = if param.is_tuple_type { "i32*" } else { "i32" }
+    let (param_type, param_closure_arity) = function_param_llvm_type(param)
     // 为参数分配内存
     let param_temp = gen.next_temp()
-    gen.add_var_with_type(param.name.lexeme, param_temp, param_type)
+    gen.add_var_with_type_and_arity(
+      param.name.lexeme,
+      param_temp,
+      param_type,
+      param_closure_arity,
+    )
     output = output + "  " + param_temp + " = alloca " + param_type + "\n"
     output = output +
       "  store " +
@@ -3323,16 +3495,54 @@ fn llvm_gen_function(
       output = output +
         "  " +
         field_val +
-        " = load i32, i32* " +
+        " = load i64, i64* " +
         field_ptr +
         "\n"
+      let (captured_type, captured_closure_arity) = match gen.get_captured_var_type(
+        func_id, var_name,
+      ) {
+        Some(info) => info
+        None => ("i32", -1)
+      }
+      let final_type = if captured_type == "" { "i32" } else { captured_type }
       let capture_alloca = gen.next_temp()
-      gen.add_var(var_name, capture_alloca)
-      output = output + "  " + capture_alloca + " = alloca i32\n"
+      gen.add_var_with_type_and_arity(var_name, capture_alloca, final_type, captured_closure_arity)
       output = output +
-        "  store i32 " +
-        field_val +
-        ", i32* " +
+        "  " +
+        capture_alloca +
+        " = alloca " +
+        final_type +
+        "\n"
+      let mut stored_val = field_val
+      if final_type == "i32" {
+        let trunc_temp = gen.next_temp()
+        output = output +
+          "  " +
+          trunc_temp +
+          " = trunc i64 " +
+          field_val +
+          " to i32\n"
+        stored_val = trunc_temp
+      } else {
+        let cast_temp = gen.next_temp()
+        output = output +
+          "  " +
+          cast_temp +
+          " = inttoptr i64 " +
+          field_val +
+          " to " +
+          final_type +
+          "\n"
+        stored_val = cast_temp
+      }
+      output = output +
+        "  store " +
+        final_type +
+        " " +
+        stored_val +
+        ", " +
+        final_type +
+        "* " +
         capture_alloca +
         "\n"
       index = index + 1

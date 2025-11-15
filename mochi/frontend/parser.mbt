@@ -2194,11 +2194,7 @@ fn Parser::parse_grouping_expr(self : Parser) -> Expr? {
     TokenKind::RParen => {
       let close = self.advance()
       let range = combine_ranges(open.range, close.range)
-      let unit_token : Token = {
-        kind: TokenKind::LiteralBool,
-        range,
-        lexeme: "()",
-      }
+      let unit_token : Token = { kind: TokenKind::LParen, range, lexeme: "()" }
       let expr : Expr = { kind: ExprKind::Literal(unit_token), range }
       Some(expr)
     }
