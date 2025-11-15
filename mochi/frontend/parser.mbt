@@ -241,12 +241,12 @@ fn Parser::parse_let_statement(self : Parser) -> Stmt? {
     TokenKind::KeywordMut => mut_keyword = Some(self.advance())
     _ => ()
   }
+  let destructured_names : Array[Token] = Array::new()
   // Check for tuple destructuring: let (x, y, z) = ...
   let name = match self.peek().kind {
     TokenKind::LParen => {
       // Tuple destructuring
       let open_paren = self.advance()
-      let destructured_names : Array[Token] = Array::new()
       for {
         if self.is_at_end() {
           self.error(self.peek(), "Unterminated tuple destructuring.")
@@ -532,6 +532,7 @@ fn Parser::parse_let_statement(self : Parser) -> Stmt? {
         let_keyword,
         mut_keyword,
         name,
+        destructured_names,
         colon,
         type_name,
         assign,

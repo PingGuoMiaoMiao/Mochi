@@ -45,11 +45,22 @@ priv struct ExprValue {
   value : String
   llvm_type : String
   closure_arity : Int
+  array_element_type : String
+  array_element_closure_arity : Int
+  tuple_element_count : Int
 }
 
 ///|
 fn expr_value(code : String, value : String, llvm_type : String) -> ExprValue {
-  { code, value, llvm_type, closure_arity: -1 }
+  {
+    code,
+    value,
+    llvm_type,
+    closure_arity: -1,
+    array_element_type: "",
+    array_element_closure_arity: -1,
+    tuple_element_count: -1,
+  }
 }
 
 ///|
@@ -64,18 +75,70 @@ fn expr_value_with_closure(
   llvm_type : String,
   arity : Int,
 ) -> ExprValue {
-  { code, value, llvm_type, closure_arity: arity }
+  {
+    code,
+    value,
+    llvm_type,
+    closure_arity: arity,
+    array_element_type: "",
+    array_element_closure_arity: -1,
+    tuple_element_count: -1,
+  }
+}
+
+///|
+fn expr_value_with_array_metadata(
+  base : ExprValue,
+  element_type : String,
+  element_closure_arity : Int,
+) -> ExprValue {
+  {
+    code: base.code,
+    value: base.value,
+    llvm_type: base.llvm_type,
+    closure_arity: base.closure_arity,
+    array_element_type: element_type,
+    array_element_closure_arity: element_closure_arity,
+    tuple_element_count: base.tuple_element_count,
+  }
+}
+
+///|
+fn expr_value_with_tuple_metadata(
+  base : ExprValue,
+  element_count : Int,
+) -> ExprValue {
+  {
+    code: base.code,
+    value: base.value,
+    llvm_type: base.llvm_type,
+    closure_arity: base.closure_arity,
+    array_element_type: base.array_element_type,
+    array_element_closure_arity: base.array_element_closure_arity,
+    tuple_element_count: element_count,
+  }
 }
 
 ///|
 priv struct StatementValue {
   value : String
   llvm_type : String
+  tuple_element_count : Int
+}
+
+///|
+priv struct GlobalVarInfo {
+  name : String
+  llvm_type : String
+  closure_arity : Int
+  array_element_type : String
+  array_element_closure_arity : Int
+  tuple_element_count : Int
 }
 
 ///|
 fn statement_value(value : String, llvm_type : String) -> StatementValue {
-  { value, llvm_type }
+  { value, llvm_type, tuple_element_count: -1 }
 }
 
 ///|
@@ -85,7 +148,50 @@ fn empty_statement_value() -> StatementValue {
 
 ///|
 fn statement_value_from_expr(value : ExprValue) -> StatementValue {
-  statement_value(value.value, value.llvm_type)
+  {
+    value: value.value,
+    llvm_type: value.llvm_type,
+    tuple_element_count: value.tuple_element_count,
+  }
+}
+
+///|
+fn statement_value_with_tuple(
+  value : String,
+  llvm_type : String,
+  tuple_element_count : Int,
+) -> StatementValue {
+  { value, llvm_type, tuple_element_count }
+}
+
+///|
+fn global_var_info(
+  name : String,
+  llvm_type : String,
+  closure_arity : Int,
+  array_element_type : String,
+  array_element_closure_arity : Int,
+  tuple_element_count : Int,
+) -> GlobalVarInfo {
+  {
+    name,
+    llvm_type,
+    closure_arity,
+    array_element_type,
+    array_element_closure_arity,
+    tuple_element_count,
+  }
+}
+
+///|
+fn default_value_for_type(llvm_type : String) -> String {
+  if llvm_type.contains("*") {
+    "null"
+  } else if llvm_type == "double" {
+    "0.000000e+00"
+  } else {
+    "0"
+  }
 }
 
 ///|
@@ -240,6 +346,45 @@ fn llvm_gen_call_closure(
 }
 
 ///|
+fn llvm_gen_call_self_closure(
+  gen : LLVMGen,
+  entry : ClosureEntry,
+  args_code : String,
+  args_temps : Array[String],
+) -> ExprValue {
+  let mut code = args_code
+  let mut param_list = "i8* " + gen.current_env_param
+  let mut index = 0
+  while index < args_temps.length() {
+    param_list = param_list + ", i32 " + args_temps[index]
+    index = index + 1
+  }
+  let mut return_type = "i32"
+  let mut tuple_count = -1
+  if entry.function_stmt.return_type_is_tuple {
+    return_type = "i32*"
+    tuple_count = entry.function_stmt.return_tuple_element_types.length()
+  }
+  let result_temp = gen.next_temp()
+  code = code +
+    "  " +
+    result_temp +
+    " = call " +
+    return_type +
+    " " +
+    closure_function_label(entry) +
+    "(" +
+    param_list +
+    ")\n"
+  let base_value = expr_value(code, result_temp, return_type)
+  if tuple_count >= 0 {
+    expr_value_with_tuple_metadata(base_value, tuple_count)
+  } else {
+    base_value
+  }
+}
+
+///|
 fn builtin_function_names() -> Array[String] {
   let names : Array[String] = Array::new()
   names.push("print_int")
@@ -293,10 +438,19 @@ priv struct LLVMGen {
   current_function_id : Int
   closure_metadata : ClosureMetadata
   mut current_return_type : String
+  array_metadata : Array[(String, String, Int)]
+  global_vars : Array[GlobalVarInfo]
+  is_top_level_context : Bool
+  tuple_metadata : Array[(String, Int)]
+  current_env_param : String
 }
 
 ///|
-fn LLVMGen::new(metadata : ClosureMetadata) -> LLVMGen {
+fn LLVMGen::new(
+  metadata : ClosureMetadata,
+  global_vars : Array[GlobalVarInfo],
+  is_top_level : Bool,
+) -> LLVMGen {
   {
     var_counter: 0,
     label_counter: 0,
@@ -306,6 +460,11 @@ fn LLVMGen::new(metadata : ClosureMetadata) -> LLVMGen {
     current_function_id: -1,
     closure_metadata: metadata,
     current_return_type: "void",
+    array_metadata: Array::new(),
+    global_vars,
+    is_top_level_context: is_top_level,
+    tuple_metadata: Array::new(),
+    current_env_param: "",
   }
 }
 
@@ -315,6 +474,8 @@ fn LLVMGen::new_with_function(
   func_id : Int,
   metadata : ClosureMetadata,
   return_type : String,
+  global_vars : Array[GlobalVarInfo],
+  is_nested_function : Bool,
 ) -> LLVMGen {
   {
     var_counter: 0,
@@ -325,6 +486,15 @@ fn LLVMGen::new_with_function(
     current_function_id: func_id,
     closure_metadata: metadata,
     current_return_type: return_type,
+    array_metadata: Array::new(),
+    global_vars,
+    is_top_level_context: false,
+    tuple_metadata: Array::new(),
+    current_env_param: if is_nested_function {
+      "%env"
+    } else {
+      ""
+    },
   }
 }
 
@@ -333,10 +503,13 @@ fn LLVMGen::get_var_entry(
   self : LLVMGen,
   name : String,
 ) -> (String, String, Int)? {
-  for pair in self.var_map {
+  let mut index = self.var_map.length() - 1
+  while index >= 0 {
+    let pair = self.var_map[index]
     if pair.0 == name {
       return Some((pair.1, pair.2, pair.3))
     }
+    index = index - 1
   }
   None
 }
@@ -362,6 +535,110 @@ fn LLVMGen::get_var_closure_arity(self : LLVMGen, name : String) -> Int {
   match self.get_var_entry(name) {
     Some(entry) => entry.2
     None => -1
+  }
+}
+
+///|
+fn LLVMGen::get_array_metadata(self : LLVMGen, name : String) -> (String, Int) {
+  for entry in self.array_metadata {
+    if entry.0 == name && entry.1 != "" {
+      return (entry.1, entry.2)
+    }
+  }
+  ("", -1)
+}
+
+///|
+fn LLVMGen::global_var_symbol(name : String) -> String {
+  "@minimbt_global_" + name
+}
+
+///|
+fn LLVMGen::has_global_var(self : LLVMGen, name : String) -> Bool {
+  for info in self.global_vars {
+    if info.name == name {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn LLVMGen::get_global_var(self : LLVMGen, name : String) -> GlobalVarInfo? {
+  for info in self.global_vars {
+    if info.name == name {
+      return Some(info)
+    }
+  }
+  None
+}
+
+///|
+fn LLVMGen::set_array_metadata(
+  self : LLVMGen,
+  name : String,
+  element_type : String,
+  closure_arity : Int,
+) -> Unit {
+  let mut index = 0
+  while index < self.array_metadata.length() {
+    if self.array_metadata[index].0 == name {
+      self.array_metadata[index] = (name, element_type, closure_arity)
+      return
+    }
+    index = index + 1
+  }
+  self.array_metadata.push((name, element_type, closure_arity))
+}
+
+///|
+fn LLVMGen::clear_array_metadata(self : LLVMGen, name : String) -> Unit {
+  let mut index = 0
+  while index < self.array_metadata.length() {
+    if self.array_metadata[index].0 == name {
+      self.array_metadata[index] = ("", "", -1)
+      return
+    }
+    index = index + 1
+  }
+}
+
+///|
+fn LLVMGen::set_tuple_metadata(
+  self : LLVMGen,
+  name : String,
+  element_count : Int,
+) -> Unit {
+  let mut index = 0
+  while index < self.tuple_metadata.length() {
+    if self.tuple_metadata[index].0 == name {
+      self.tuple_metadata[index] = (name, element_count)
+      return
+    }
+    index = index + 1
+  }
+  self.tuple_metadata.push((name, element_count))
+}
+
+///|
+fn LLVMGen::get_tuple_metadata(self : LLVMGen, name : String) -> Int {
+  for entry in self.tuple_metadata {
+    if entry.0 == name {
+      return entry.1
+    }
+  }
+  -1
+}
+
+///|
+fn LLVMGen::clear_tuple_metadata(self : LLVMGen, name : String) -> Unit {
+  let mut index = 0
+  while index < self.tuple_metadata.length() {
+    if self.tuple_metadata[index].0 == name {
+      self.tuple_metadata[index] = ("", -1)
+      return
+    }
+    index = index + 1
   }
 }
 
@@ -404,6 +681,37 @@ fn LLVMGen::add_var_with_type_and_arity(
   closure_arity : Int,
 ) -> Unit {
   self.var_map.push((name, temp_name, llvm_type, closure_arity))
+}
+
+///|
+fn LLVMGen::set_var_entry(
+  self : LLVMGen,
+  name : String,
+  temp_name : String,
+  llvm_type : String,
+  closure_arity : Int,
+) -> Unit {
+  let mut index = self.var_map.length() - 1
+  while index >= 0 {
+    if self.var_map[index].0 == name {
+      self.var_map[index] = (name, temp_name, llvm_type, closure_arity)
+      return
+    }
+    index = index - 1
+  }
+  self.add_var_with_type_and_arity(name, temp_name, llvm_type, closure_arity)
+}
+
+///|
+fn LLVMGen::remove_var_entry(self : LLVMGen, name : String) -> Unit {
+  let mut index = self.var_map.length() - 1
+  while index >= 0 {
+    if self.var_map[index].0 == name {
+      ignore(self.var_map.remove(index))
+      return
+    }
+    index = index - 1
+  }
 }
 
 ///|
@@ -748,6 +1056,26 @@ fn generate_closure_struct_definitions(metadata : ClosureMetadata) -> String {
 }
 
 ///|
+fn generate_global_declarations(global_vars : Array[GlobalVarInfo]) -> String {
+  if global_vars.length() == 0 {
+    return ""
+  }
+  let mut declarations = ""
+  for info in global_vars {
+    let default_value = default_value_for_type(info.llvm_type)
+    let symbol = LLVMGen::global_var_symbol(info.name)
+    declarations = declarations +
+      symbol +
+      " = global " +
+      info.llvm_type +
+      " " +
+      default_value +
+      "\n"
+  }
+  declarations + "\n"
+}
+
+///|
 fn collect_all_functions(statements : Array[Stmt]) -> Array[FunctionStmt] {
   let functions : Array[FunctionStmt] = Array::new()
   for stmt in statements {
@@ -967,6 +1295,11 @@ fn collect_free_vars_in_stmt(
         free_vars,
       )
       add_name_to_scope(local_scope, let_stmt.name.lexeme)
+      for token in let_stmt.destructured_names {
+        if token.lexeme != "_" {
+          add_name_to_scope(local_scope, token.lexeme)
+        }
+      }
     }
     StmtKind::Assign(assign_stmt) => {
       collect_free_vars_in_expr(
@@ -1257,14 +1590,32 @@ fn collect_free_vars_in_expr(
 }
 
 ///|
+fn collect_global_vars(
+  statements : Array[Stmt],
+  closure_metadata : ClosureMetadata,
+) -> Array[GlobalVarInfo] {
+  let globals : Array[GlobalVarInfo] = Array::new()
+  let gen = LLVMGen::new(closure_metadata.clone(), globals, true)
+  for stmt in statements {
+    match stmt.kind {
+      StmtKind::Let(let_stmt) => ignore(llvm_gen_let(gen, let_stmt))
+      _ => ()
+    }
+  }
+  globals
+}
+
+///|
 fn generate_llvm(statements : Array[Stmt]) -> String {
   let mut output = "target triple = \"riscv64-unknown-linux-gnu\"\n\n"
   let closure_metadata = analyze_closures(statements)
+  let global_vars = collect_global_vars(statements, closure_metadata.clone())
 
   // 生成外部函数声明
   output = output + generate_external_declarations()
   output = output + generate_closure_env_type_definitions(closure_metadata)
   output = output + generate_closure_struct_definitions(closure_metadata)
+  output = output + generate_global_declarations(global_vars)
 
   // 第一遍：收集结构体定义并生成类型定义
   let struct_defs_map : Array[(String, Array[String])] = Array::new()
@@ -1298,7 +1649,6 @@ fn generate_llvm(statements : Array[Stmt]) -> String {
   // 第二遍：生成所有函数定义（包含嵌套函数）
   let main_statements : Array[Stmt] = Array::new()
   let mut has_main_function = false
-  let mut has_main_statements = false
   let all_functions = collect_all_functions(statements)
   for function_stmt in all_functions {
     let entry = closure_metadata.get_entry(function_id(function_stmt))
@@ -1310,39 +1660,43 @@ fn generate_llvm(statements : Array[Stmt]) -> String {
       has_main_function = true
     }
     let func_code = llvm_gen_function(
-      struct_defs_map, function_stmt, closure_metadata,
+      struct_defs_map, function_stmt, closure_metadata, global_vars,
     )
     output = output + func_code
   }
   for stmt in statements {
     match stmt.kind {
       StmtKind::Function(_) => ()
-      _ => {
-        ignore(main_statements.push(stmt))
-        has_main_statements = true
-      }
+      _ => ignore(main_statements.push(stmt))
     }
   }
 
   // 如果没有 main 函数，且 main_statements 不为空，生成一个 main 函数
   // 确保不会重复生成 main 函数
-  let mut emitted_minimbt_main = false
-  if !has_main_function && has_main_statements && main_statements.length() > 0 {
-    let main_code = llvm_gen_main_function(
-      struct_defs_map, main_statements, closure_metadata,
-    )
-    output = output + main_code
-    emitted_minimbt_main = true
-  } else if has_main_function {
-    emitted_minimbt_main = true
+  let mut emitted_minimbt_main = has_main_function
+  let mut initializer_emitted = false
+  if main_statements.length() > 0 {
+    if has_main_function {
+      let init_code = llvm_gen_top_level_function(
+        "@minimbt_init_globals", struct_defs_map, main_statements, closure_metadata,
+        global_vars,
+      )
+      output = output + init_code
+      initializer_emitted = true
+    } else {
+      let main_code = llvm_gen_top_level_function(
+        "@minimbt_main", struct_defs_map, main_statements, closure_metadata, global_vars,
+      )
+      output = output + main_code
+      emitted_minimbt_main = true
+    }
   }
   if emitted_minimbt_main {
-    output = output +
-      "define i32 @main() {\n" +
-      "entry:\n" +
-      "  call void @minimbt_main()\n" +
-      "  ret i32 0\n" +
-      "}\n"
+    output = output + "define i32 @main() {\n" + "entry:\n"
+    if initializer_emitted {
+      output = output + "  call void @minimbt_init_globals()\n"
+    }
+    output = output + "  call void @minimbt_main()\n" + "  ret i32 0\n" + "}\n"
   }
   output
 }
@@ -1368,24 +1722,23 @@ fn generate_external_declarations() -> String {
 }
 
 ///|
-// 生成主函数
-fn llvm_gen_main_function(
+// 生成顶层语句函数（初始化或脚本 main）
+fn llvm_gen_top_level_function(
+  function_name : String,
   struct_defs_map : Array[(String, Array[String])],
   main_statements : Array[Stmt],
   closure_metadata : ClosureMetadata,
+  global_vars : Array[GlobalVarInfo],
 ) -> String {
-  // 生成 minimbt_main 函数以匹配 riscv_rt/start.c
-  let mut output = "define void @minimbt_main() {\n"
+  let mut output = "define void " + function_name + "() {\n"
   output = output + "entry:\n"
-  let gen = LLVMGen::new(closure_metadata.clone())
+  let gen = LLVMGen::new(closure_metadata.clone(), global_vars, true)
   for struct_def in struct_defs_map {
     gen.struct_defs.push(struct_def)
   }
   gen.current_return_type = "void"
   let (body_code, _) = llvm_gen_statements(gen, main_statements)
   output = output + body_code
-  // main 函数返回 void（匹配 riscv_rt/start.c）
-  // 检查函数体是否已经包含 return 语句
   let has_return = body_code.contains("ret void") ||
     body_code.contains("ret i32")
   if !has_return {
@@ -1534,10 +1887,9 @@ fn llvm_gen_literal(gen : LLVMGen, token : Token) -> ExprValue {
           expr_value("", temp, "i32")
         }
       }
-    TokenKind::LParen => {
+    TokenKind::LParen =>
       // Unit literal: () - 直接使用常量 0
       expr_value("", "0", "i32")
-    }
     _ => {
       let temp = gen.next_temp()
       expr_value("", temp, "i32")
@@ -1564,10 +1916,64 @@ fn llvm_gen_ident(gen : LLVMGen, token : Token) -> ExprValue {
       if closure_arity >= 0 {
         expr_value_with_closure(code, temp, var_type, closure_arity)
       } else {
-        expr_value(code, temp, var_type)
+        let base_value = expr_value(code, temp, var_type)
+        let (element_type, element_closure_arity) = gen.get_array_metadata(
+          token.lexeme,
+        )
+        if element_type != "" {
+          expr_value_with_array_metadata(
+            base_value, element_type, element_closure_arity,
+          )
+        } else {
+          let tuple_count = gen.get_tuple_metadata(token.lexeme)
+          if tuple_count >= 0 {
+            expr_value_with_tuple_metadata(base_value, tuple_count)
+          } else {
+            base_value
+          }
+        }
       }
     }
-    None =>
+    None => {
+      match gen.get_global_var(token.lexeme) {
+        Some(info) => {
+          let temp = gen.next_temp()
+          let code = "  " +
+            temp +
+            " = load " +
+            info.llvm_type +
+            ", " +
+            info.llvm_type +
+            "* " +
+            LLVMGen::global_var_symbol(info.name) +
+            "\n"
+          return if info.closure_arity >= 0 {
+            expr_value_with_closure(
+              code,
+              temp,
+              info.llvm_type,
+              info.closure_arity,
+            )
+          } else {
+            let base_value = expr_value(code, temp, info.llvm_type)
+            if info.array_element_type != "" {
+              expr_value_with_array_metadata(
+                base_value,
+                info.array_element_type,
+                info.array_element_closure_arity,
+              )
+            } else if info.tuple_element_count >= 0 {
+              expr_value_with_tuple_metadata(
+                base_value,
+                info.tuple_element_count,
+              )
+            } else {
+              base_value
+            }
+          }
+        }
+        None => ()
+      }
       match gen.find_local_function_entry(token.lexeme) {
         Some(entry) => llvm_gen_create_closure(gen, entry)
         None =>
@@ -1579,6 +1985,7 @@ fn llvm_gen_ident(gen : LLVMGen, token : Token) -> ExprValue {
             }
           }
       }
+    }
   }
 }
 
@@ -1952,11 +2359,13 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
   let mut args_code = ""
   let args_temps : Array[String] = Array::new()
   let args_types : Array[String] = Array::new()
+  let args_closure_arities : Array[Int] = Array::new()
   for arg in call_expr.arguments {
     let arg_value = llvm_gen_expr_value(gen, arg)
     args_code = args_code + arg_value.code
     args_temps.push(arg_value.value)
     args_types.push(arg_value.llvm_type)
+    args_closure_arities.push(arg_value.closure_arity)
   }
 
   // 获取函数名和函数类型
@@ -1966,6 +2375,11 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
   let mut is_void = false
   let mut builtin_param_types : Array[String]? = None
   let mut return_closure_arity = -1
+  let mut array_element_type = ""
+  let mut array_element_closure_arity = -1
+  let mut return_tuple_count = -1
+  let mut direct_function_entry : ClosureEntry? = None
+  let mut is_recursive_call = false
   match call_expr.callee.kind {
     ExprKind::Ident(token) => {
       let name = token.lexeme
@@ -1991,13 +2405,18 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
             None => ()
           }
           match gen.find_function_entry_by_name(name, -1) {
-            Some(entry) =>
+            Some(entry) => {
+              direct_function_entry = Some(entry)
               if entry.function_stmt.return_type_is_function {
                 return_closure_arity = entry.function_stmt.function_return_param_types.length()
                 return_type = closure_struct_pointer_type_for_arity(
                   return_closure_arity,
                 )
+              } else if entry.function_stmt.return_type_is_tuple {
+                return_type = "i32*"
+                return_tuple_count = entry.function_stmt.return_tuple_element_types.length()
               }
+            }
             None => ()
           }
           match get_builtin_function(name) {
@@ -2009,6 +2428,15 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
             }
             None => func_name = "@" + name
           }
+          if token.lexeme == gen.current_function && gen.current_env_param != "" {
+            match gen.closure_metadata.get_entry(gen.current_function_id) {
+              Some(entry) => {
+                direct_function_entry = Some(entry)
+                is_recursive_call = true
+              }
+              None => ()
+            }
+          }
         }
       }
     }
@@ -2018,9 +2446,35 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
         _ => false
       }
       if is_array_make && field_access.field.lexeme == "make" {
-        func_name = "@minimbt_create_array"
-        return_type = "i32*"
-        builtin_param_types = Some(builtin_param_types_two("i32", "i32"))
+        let init_type = if args_types.length() > 1 {
+          args_types[1]
+        } else {
+          "i32"
+        }
+        let init_closure_arity = if args_closure_arities.length() > 1 {
+          args_closure_arities[1]
+        } else {
+          -1
+        }
+        if init_closure_arity >= 0 || init_type.contains("*") {
+          func_name = "@minimbt_create_ptr_array"
+          return_type = "i8**"
+          builtin_param_types = Some(builtin_param_types_two("i32", "i8*"))
+          array_element_type = init_type
+          array_element_closure_arity = init_closure_arity
+        } else if init_type == "double" {
+          func_name = "@minimbt_create_float_array"
+          return_type = "double*"
+          builtin_param_types = Some(builtin_param_types_two("i32", "double"))
+          array_element_type = "double"
+          array_element_closure_arity = -1
+        } else {
+          func_name = "@minimbt_create_array"
+          return_type = "i32*"
+          builtin_param_types = Some(builtin_param_types_two("i32", "i32"))
+          array_element_type = "i32"
+          array_element_closure_arity = -1
+        }
       } else {
         let module_name = match field_access.object.kind {
           ExprKind::Ident(token) => token.lexeme
@@ -2050,9 +2504,25 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
 
   // 生成函数调用代码
   let args_count = args_temps.length()
-  let param_types_for_call : Array[String] = match builtin_param_types {
+  let mut param_types_for_call : Array[String] = match builtin_param_types {
     Some(types) => types
     None => Array::new()
+  }
+  if param_types_for_call.length() == 0 {
+    match direct_function_entry {
+      Some(entry) => {
+        let params : Array[String] = Array::new()
+        for param in entry.function_stmt.parameters {
+          if param.is_tuple_type {
+            params.push("i32*")
+          } else {
+            params.push("i32")
+          }
+        }
+        param_types_for_call = params
+      }
+      None => ()
+    }
   }
   if param_types_for_call.length() == 0 {
     let mut idx = 0
@@ -2072,30 +2542,71 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
   while index < args_count {
     let mut arg_temp = args_temps[index]
     let param_type = param_types_for_call[index]
-    let arg_type = args_types[index]
+    let mut arg_type = args_types[index]
     if param_type == "i32" && arg_type != "i32" {
       let cast_temp = gen.next_temp()
       let cast_code = if arg_type.contains("*") {
         "  " +
-          cast_temp +
-          " = ptrtoint " +
-          arg_type +
-          " " +
-          arg_temp +
-          " to i32\n"
+        cast_temp +
+        " = ptrtoint " +
+        arg_type +
+        " " +
+        arg_temp +
+        " to i32\n"
       } else {
         "  " +
-          cast_temp +
-          " = bitcast " +
-          arg_type +
-          " " +
-          arg_temp +
-          " to i32\n"
+        cast_temp +
+        " = bitcast " +
+        arg_type +
+        " " +
+        arg_temp +
+        " to i32\n"
       }
       args_code = args_code + cast_code
       arg_temp = cast_temp
-      args_temps[index] = arg_temp
+      arg_type = "i32"
+    } else if param_type == "i8*" && arg_type != "i8*" {
+      let cast_temp = gen.next_temp()
+      let cast_code = if arg_type.contains("*") {
+        "  " +
+        cast_temp +
+        " = bitcast " +
+        arg_type +
+        " " +
+        arg_temp +
+        " to i8*\n"
+      } else if arg_type == "i32" {
+        "  " + cast_temp + " = inttoptr i32 " + arg_temp + " to i8*\n"
+      } else {
+        "  " +
+        cast_temp +
+        " = bitcast " +
+        arg_type +
+        " " +
+        arg_temp +
+        " to i8*\n"
+      }
+      args_code = args_code + cast_code
+      arg_temp = cast_temp
+      arg_type = "i8*"
+    } else if param_type == "double" && arg_type != "double" {
+      let cast_temp = gen.next_temp()
+      let cast_code = if arg_type == "i32" {
+        "  " + cast_temp + " = sitofp i32 " + arg_temp + " to double\n"
+      } else {
+        "  " +
+        cast_temp +
+        " = bitcast " +
+        arg_type +
+        " " +
+        arg_temp +
+        " to double\n"
+      }
+      args_code = args_code + cast_code
+      arg_temp = cast_temp
+      arg_type = "double"
     }
+    args_temps[index] = arg_temp
     let entry = param_type + " " + arg_temp
     if param_type_list == "" {
       param_type_list = entry
@@ -2103,6 +2614,13 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
       param_type_list = param_type_list + ", " + entry
     }
     index = index + 1
+  }
+  if is_recursive_call {
+    match direct_function_entry {
+      Some(entry) =>
+        return llvm_gen_call_self_closure(gen, entry, args_code, args_temps)
+      None => ()
+    }
   }
   if is_void {
     // void 函数，不返回值
@@ -2124,13 +2642,22 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
       param_type_list +
       ")\n"
     let code = args_code + call_code
-
     if return_closure_arity >= 0 {
       expr_value_with_closure(
         code, result_temp, return_type, return_closure_arity,
       )
     } else {
-      expr_value(code, result_temp, return_type)
+      let mut base_value = expr_value(code, result_temp, return_type)
+      if array_element_type != "" {
+        base_value = expr_value_with_array_metadata(
+          base_value, array_element_type, array_element_closure_arity,
+        )
+      }
+      if return_tuple_count >= 0 {
+        expr_value_with_tuple_metadata(base_value, return_tuple_count)
+      } else {
+        base_value
+      }
     }
   }
 }
@@ -2159,7 +2686,14 @@ fn llvm_gen_if_expr(gen : LLVMGen, if_expr : IfExpr) -> ExprValue {
     else_label +
     "\n"
   let then_value = llvm_gen_expr_value(gen, if_expr.then_expr)
-  let then_temp = if then_value.value != "" { then_value.value } else { "0" }
+  let mut then_temp = if then_value.value != "" {
+    then_value.value
+  } else {
+    "0"
+  }
+  if then_temp.has_prefix("%") && !then_value.code.contains(then_temp + " =") {
+    then_temp = "0"
+  }
   let then_store_code = "  store i32 " +
     then_temp +
     ", i32* " +
@@ -2169,7 +2703,14 @@ fn llvm_gen_if_expr(gen : LLVMGen, if_expr : IfExpr) -> ExprValue {
     merge_label +
     "\n"
   let else_value = llvm_gen_expr_value(gen, if_expr.else_expr)
-  let else_temp = if else_value.value != "" { else_value.value } else { "0" }
+  let mut else_temp = if else_value.value != "" {
+    else_value.value
+  } else {
+    "0"
+  }
+  if else_temp.has_prefix("%") && !else_value.code.contains(else_temp + " =") {
+    else_temp = "0"
+  }
   let else_store_code = "  store i32 " +
     else_temp +
     ", i32* " +
@@ -2203,13 +2744,101 @@ fn llvm_gen_if_expr(gen : LLVMGen, if_expr : IfExpr) -> ExprValue {
 // 支持：变量分配、内存管理、下划线变量（忽略值）
 fn llvm_gen_let(gen : LLVMGen, let_stmt : LetStmt) -> (String, StatementValue) {
   let value = llvm_gen_expr_value(gen, let_stmt.value)
-
-  // 检查是否是下划线变量（忽略值）
-  if let_stmt.name.lexeme == "_" {
+  if let_stmt.destructured_names.length() > 0 {
+    let mut code = value.code
+    let tuple_ptr = value.value
+    let mut index = 0
+    for token in let_stmt.destructured_names {
+      if token.lexeme == "_" {
+        index = index + 1
+        continue
+      }
+      let elem_ptr = gen.next_temp()
+      code = code +
+        "  " +
+        elem_ptr +
+        " = getelementptr i32, i32* " +
+        tuple_ptr +
+        ", i32 " +
+        index.to_string() +
+        "\n"
+      let load_temp = gen.next_temp()
+      code = code + "  " + load_temp + " = load i32, i32* " + elem_ptr + "\n"
+      if gen.is_top_level_context {
+        let global_name = LLVMGen::global_var_symbol(token.lexeme)
+        if !gen.has_global_var(token.lexeme) {
+          gen.global_vars.push(
+            global_var_info(token.lexeme, "i32", -1, "", -1, -1),
+          )
+        }
+        gen.add_var_with_type_and_arity(token.lexeme, global_name, "i32", -1)
+        code = code +
+          "  store i32 " +
+          load_temp +
+          ", i32* " +
+          global_name +
+          "\n"
+      } else {
+        let var_temp = gen.next_temp()
+        gen.add_var_with_type_and_arity(token.lexeme, var_temp, "i32", -1)
+        code = code + "  " + var_temp + " = alloca i32\n"
+        code = code + "  store i32 " + load_temp + ", i32* " + var_temp + "\n"
+      }
+      gen.clear_array_metadata(token.lexeme)
+      gen.clear_tuple_metadata(token.lexeme)
+      index = index + 1
+    }
+    (code, empty_statement_value())
+  } else if let_stmt.name.lexeme == "_" {
     // 下划线变量：只生成值的代码，不分配变量
     (value.code, statement_value_from_expr(value))
-  } else {
     // 普通变量：分配内存并存储值
+  } else if gen.is_top_level_context {
+    let global_name = LLVMGen::global_var_symbol(let_stmt.name.lexeme)
+    if !gen.has_global_var(let_stmt.name.lexeme) {
+      gen.global_vars.push(
+        global_var_info(
+          let_stmt.name.lexeme,
+          value.llvm_type,
+          value.closure_arity,
+          value.array_element_type,
+          value.array_element_closure_arity,
+          value.tuple_element_count,
+        ),
+      )
+    }
+    gen.add_var_with_type_and_arity(
+      let_stmt.name.lexeme,
+      global_name,
+      value.llvm_type,
+      value.closure_arity,
+    )
+    let code = value.code +
+      "  store " +
+      value.llvm_type +
+      " " +
+      value.value +
+      ", " +
+      value.llvm_type +
+      "* " +
+      global_name +
+      "\n"
+    if value.array_element_type != "" {
+      gen.set_array_metadata(
+        let_stmt.name.lexeme,
+        value.array_element_type,
+        value.array_element_closure_arity,
+      )
+    } else {
+      gen.clear_array_metadata(let_stmt.name.lexeme)
+    }
+    if value.tuple_element_count >= 0 {
+      gen.set_tuple_metadata(let_stmt.name.lexeme, value.tuple_element_count)
+    } else {
+      gen.clear_tuple_metadata(let_stmt.name.lexeme)
+    }
+    (code, empty_statement_value())
+  } else {
     let var_temp = gen.next_temp()
     gen.add_var_with_type_and_arity(
       let_stmt.name.lexeme,
@@ -2232,6 +2861,20 @@ fn llvm_gen_let(gen : LLVMGen, let_stmt : LetStmt) -> (String, StatementValue) {
       "* " +
       var_temp +
       "\n"
+    if value.array_element_type != "" {
+      gen.set_array_metadata(
+        let_stmt.name.lexeme,
+        value.array_element_type,
+        value.array_element_closure_arity,
+      )
+    } else {
+      gen.clear_array_metadata(let_stmt.name.lexeme)
+    }
+    if value.tuple_element_count >= 0 {
+      gen.set_tuple_metadata(let_stmt.name.lexeme, value.tuple_element_count)
+    } else {
+      gen.clear_tuple_metadata(let_stmt.name.lexeme)
+    }
     // let 语句本身不返回值
     (code, empty_statement_value())
   }
@@ -2269,6 +2912,20 @@ fn llvm_gen_assign(
             var_name +
             "\n"
           let code = value.code + store_code
+          if value.array_element_type != "" {
+            gen.set_array_metadata(
+              token.lexeme,
+              value.array_element_type,
+              value.array_element_closure_arity,
+            )
+          } else {
+            gen.clear_array_metadata(token.lexeme)
+          }
+          if value.tuple_element_count >= 0 {
+            gen.set_tuple_metadata(token.lexeme, value.tuple_element_count)
+          } else {
+            gen.clear_tuple_metadata(token.lexeme)
+          }
           // 赋值语句返回赋值后的值
           (code, statement_value_from_expr(value))
         }
@@ -2328,8 +2985,6 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, StatementValue) {
   let then_label = gen.next_label()
   let else_label = gen.next_label()
   let merge_label = gen.next_label()
-  let result_ptr = gen.next_temp()
-  let alloc_code = "  " + result_ptr + " = alloca i32\n"
 
   // 生成条件比较
   let cmp_temp = gen.next_temp()
@@ -2346,42 +3001,71 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, StatementValue) {
 
   // 生成 then 分支（语句数组）
   let (then_code, then_result) = llvm_gen_statements(gen, if_stmt.then_body)
-  let mut then_value = if statement_value_has_value(then_result) {
-    then_result.value
-  } else {
-    "0"
-  }
-  if then_value.has_prefix("%") && !then_code.contains(then_value + " =") {
-    then_value = "0"
-  }
-  let then_store_code = "  store i32 " +
-    then_value +
-    ", i32* " +
-    result_ptr +
-    "\n"
-  let then_br_code = then_store_code + "  br label %" + merge_label + "\n"
-
   // 生成 else 分支（如果有）
   let (else_code, else_result) = match if_stmt.else_body.length() {
     0 => ("", empty_statement_value())
     _ => llvm_gen_statements(gen, if_stmt.else_body)
   }
-  let mut else_value = if statement_value_has_value(else_result) {
-    else_result.value
-  } else {
-    "0"
+  let mut result_type = "i32"
+  let mut result_tuple_count = -1
+  if statement_value_has_value(then_result) && then_result.llvm_type != "" {
+    result_type = then_result.llvm_type
+    if then_result.tuple_element_count >= 0 {
+      result_tuple_count = then_result.tuple_element_count
+    }
+  } else if statement_value_has_value(else_result) &&
+    else_result.llvm_type != "" {
+    result_type = else_result.llvm_type
+    if else_result.tuple_element_count >= 0 {
+      result_tuple_count = else_result.tuple_element_count
+    }
   }
-  if else_value.has_prefix("%") && !else_code.contains(else_value + " =") {
-    else_value = "0"
+  let result_ptr = gen.next_temp()
+  let alloc_code = "  " + result_ptr + " = alloca " + result_type + "\n"
+  let mut then_value = default_value_for_type(result_type)
+  if statement_value_has_value(then_result) && then_result.value != "" {
+    then_value = then_result.value
+    if then_value.has_prefix("%") && !then_code.contains(then_value + " =") {
+      then_value = default_value_for_type(result_type)
+    }
   }
-  let else_store_code = "  store i32 " +
+  let then_store_code = "  store " +
+    result_type +
+    " " +
+    then_value +
+    ", " +
+    result_type +
+    "* " +
+    result_ptr +
+    "\n"
+  let then_br_code = then_store_code + "  br label %" + merge_label + "\n"
+  let mut else_value = default_value_for_type(result_type)
+  if statement_value_has_value(else_result) && else_result.value != "" {
+    else_value = else_result.value
+    if else_value.has_prefix("%") && !else_code.contains(else_value + " =") {
+      else_value = default_value_for_type(result_type)
+    }
+  }
+  let else_store_code = "  store " +
+    result_type +
+    " " +
     else_value +
-    ", i32* " +
+    ", " +
+    result_type +
+    "* " +
     result_ptr +
     "\n"
   let else_br_code = else_store_code + "  br label %" + merge_label + "\n"
   let result_temp = gen.next_temp()
-  let load_code = "  " + result_temp + " = load i32, i32* " + result_ptr + "\n"
+  let load_code = "  " +
+    result_temp +
+    " = load " +
+    result_type +
+    ", " +
+    result_type +
+    "* " +
+    result_ptr +
+    "\n"
 
   // 组合所有代码
   let code = alloc_code +
@@ -2399,7 +3083,10 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, StatementValue) {
     merge_label +
     ":\n" +
     load_code
-  (code, statement_value(result_temp, "i32"))
+  (
+    code,
+    statement_value_with_tuple(result_temp, result_type, result_tuple_count),
+  )
 }
 
 ///|
@@ -2499,6 +3186,7 @@ fn llvm_gen_function(
   struct_defs_map : Array[(String, Array[String])],
   function_stmt : FunctionStmt,
   closure_metadata : ClosureMetadata,
+  global_vars : Array[GlobalVarInfo],
 ) -> String {
   let func_id = function_id(function_stmt)
   let function_entry = closure_metadata.get_entry(func_id)
@@ -2530,18 +3218,17 @@ fn llvm_gen_function(
   if is_nested_function {
     param_list = "i8* %env"
   }
-  let mut first = true
-  if param_list != "" {
-    first = false
-  }
+  let mut first = param_list == ""
   let mut param_index = 0
-  for _param in function_stmt.parameters {
+  for param in function_stmt.parameters {
     let param_name = "%" + param_index.to_string()
+    let param_type = if param.is_tuple_type { "i32*" } else { "i32" }
+    let entry = param_type + " " + param_name
     if first {
-      param_list = "i32 " + param_name
+      param_list = entry
       first = false
     } else {
-      param_list = param_list + ", i32 " + param_name
+      param_list = param_list + ", " + entry
     }
     param_index = param_index + 1
   }
@@ -2552,6 +3239,8 @@ fn llvm_gen_function(
   if function_stmt.return_type_is_function {
     return_closure_arity = function_stmt.function_return_param_types.length()
     return_type = closure_struct_pointer_type_for_arity(return_closure_arity)
+  } else if function_stmt.return_type_is_tuple {
+    return_type = "i32*"
   }
   let mut output = "define " +
     return_type +
@@ -2568,6 +3257,8 @@ fn llvm_gen_function(
     func_id,
     closure_metadata.clone(),
     return_type,
+    global_vars,
+    is_nested_function,
   )
   // 复制结构体定义到 gen
   for struct_def in struct_defs_map {
@@ -2578,11 +3269,29 @@ fn llvm_gen_function(
   let mut param_index = 0
   for param in function_stmt.parameters {
     let param_arg = "%" + param_index.to_string()
+    let param_type = if param.is_tuple_type { "i32*" } else { "i32" }
     // 为参数分配内存
     let param_temp = gen.next_temp()
-    gen.add_var(param.name.lexeme, param_temp)
-    output = output + "  " + param_temp + " = alloca i32\n"
-    output = output + "  store i32 " + param_arg + ", i32* " + param_temp + "\n"
+    gen.add_var_with_type(param.name.lexeme, param_temp, param_type)
+    output = output + "  " + param_temp + " = alloca " + param_type + "\n"
+    output = output +
+      "  store " +
+      param_type +
+      " " +
+      param_arg +
+      ", " +
+      param_type +
+      "* " +
+      param_temp +
+      "\n"
+    if param.is_tuple_type {
+      gen.set_tuple_metadata(
+        param.name.lexeme,
+        param.tuple_element_types.length(),
+      )
+    } else {
+      gen.clear_tuple_metadata(param.name.lexeme)
+    }
     param_index = param_index + 1
   }
   if is_nested_function && free_vars.length() > 0 {
@@ -2693,38 +3402,162 @@ fn llvm_gen_index(gen : LLVMGen, index_expr : IndexExpr) -> ExprValue {
 
   // 生成索引表达式的代码
   let index_value = llvm_gen_expr_value(gen, index_expr.index)
-
-  // 数组指针（应为 i32*）
-  let array_ptr_temp = array_value.value
-
-  // 使用 getelementptr 计算元素地址
-  // getelementptr i32, i32* %array_ptr, i32 %index
-  let elem_ptr_temp = gen.next_temp()
-  let gep_code = "  " +
-    elem_ptr_temp +
-    " = getelementptr i32, i32* " +
-    array_ptr_temp +
-    ", i32 " +
-    index_value.value +
-    "\n"
-
-  // 使用 load 指令加载元素值
-  let result_temp = gen.next_temp()
-  let load_code = "  " +
-    result_temp +
-    " = load i32, i32* " +
-    elem_ptr_temp +
-    "\n"
-
-  let code = array_value.code + index_value.code + gep_code + load_code
-  expr_value(code, result_temp, "i32")
+  let mut element_type = array_value.array_element_type
+  let element_closure_arity = array_value.array_element_closure_arity
+  if element_type == "" {
+    if array_value.llvm_type == "double*" {
+      element_type = "double"
+    } else if array_value.llvm_type == "i8**" {
+      element_type = "i8*"
+    } else {
+      element_type = "i32"
+    }
+  }
+  if array_value.llvm_type == "double*" || element_type == "double" {
+    let elem_ptr_temp = gen.next_temp()
+    let gep_code = "  " +
+      elem_ptr_temp +
+      " = getelementptr double, double* " +
+      array_value.value +
+      ", i32 " +
+      index_value.value +
+      "\n"
+    let result_temp = gen.next_temp()
+    let load_code = "  " +
+      result_temp +
+      " = load double, double* " +
+      elem_ptr_temp +
+      "\n"
+    let code = array_value.code + index_value.code + gep_code + load_code
+    expr_value(code, result_temp, "double")
+  } else if array_value.llvm_type == "i8**" ||
+    element_type.contains("*") ||
+    element_closure_arity >= 0 {
+    let elem_ptr_temp = gen.next_temp()
+    let gep_code = "  " +
+      elem_ptr_temp +
+      " = getelementptr i8*, i8** " +
+      array_value.value +
+      ", i32 " +
+      index_value.value +
+      "\n"
+    let loaded_temp = gen.next_temp()
+    let load_code = "  " +
+      loaded_temp +
+      " = load i8*, i8** " +
+      elem_ptr_temp +
+      "\n"
+    let mut final_temp = loaded_temp
+    let mut additional_code = ""
+    if element_type != "" && element_type != "i8*" {
+      let cast_temp = gen.next_temp()
+      additional_code = "  " +
+        cast_temp +
+        " = bitcast i8* " +
+        loaded_temp +
+        " to " +
+        element_type +
+        "\n"
+      final_temp = cast_temp
+    }
+    let code = array_value.code +
+      index_value.code +
+      gep_code +
+      load_code +
+      additional_code
+    if element_closure_arity >= 0 {
+      expr_value_with_closure(
+        code, final_temp, element_type, element_closure_arity,
+      )
+    } else {
+      expr_value(code, final_temp, element_type)
+    }
+  } else {
+    let elem_ptr_temp = gen.next_temp()
+    let gep_code = "  " +
+      elem_ptr_temp +
+      " = getelementptr i32, i32* " +
+      array_value.value +
+      ", i32 " +
+      index_value.value +
+      "\n"
+    let result_temp = gen.next_temp()
+    let load_code = "  " +
+      result_temp +
+      " = load i32, i32* " +
+      elem_ptr_temp +
+      "\n"
+    let code = array_value.code + index_value.code + gep_code + load_code
+    expr_value(code, result_temp, "i32")
+  }
 }
 
 ///|
 // 占位函数：元组字面量生成
 fn llvm_gen_tuple_literal(gen : LLVMGen, tuple_lit : TupleLiteral) -> ExprValue {
-  let temp = gen.next_temp()
-  expr_value("", temp, "i32")
+  let element_count = tuple_lit.elements.length()
+  let mut code = ""
+  let element_values : Array[String] = Array::new()
+  for element in tuple_lit.elements {
+    let element_value = llvm_gen_expr_value(gen, element)
+    code = code + element_value.code
+    let mut value_temp = element_value.value
+    if element_value.llvm_type != "i32" {
+      let cast_temp = gen.next_temp()
+      let cast_code = if element_value.llvm_type.contains("*") {
+        "  " +
+        cast_temp +
+        " = ptrtoint " +
+        element_value.llvm_type +
+        " " +
+        element_value.value +
+        " to i32\n"
+      } else if element_value.llvm_type == "double" {
+        "  " +
+        cast_temp +
+        " = fptosi double " +
+        element_value.value +
+        " to i32\n"
+      } else {
+        "  " +
+        cast_temp +
+        " = bitcast " +
+        element_value.llvm_type +
+        " " +
+        element_value.value +
+        " to i32\n"
+      }
+      code = code + cast_code
+      value_temp = cast_temp
+    }
+    element_values.push(value_temp)
+  }
+  let size_bytes = (element_count * 4).to_string()
+  let raw_ptr = gen.next_temp()
+  code = code +
+    "  " +
+    raw_ptr +
+    " = call i8* @minimbt_malloc(i32 " +
+    size_bytes +
+    ")\n"
+  let tuple_ptr = gen.next_temp()
+  code = code + "  " + tuple_ptr + " = bitcast i8* " + raw_ptr + " to i32*\n"
+  let mut index = 0
+  for value_temp in element_values {
+    let elem_ptr = gen.next_temp()
+    code = code +
+      "  " +
+      elem_ptr +
+      " = getelementptr i32, i32* " +
+      tuple_ptr +
+      ", i32 " +
+      index.to_string() +
+      "\n"
+    code = code + "  store i32 " + value_temp + ", i32* " + elem_ptr + "\n"
+    index = index + 1
+  }
+  let base_value = expr_value(code, tuple_ptr, "i32*")
+  expr_value_with_tuple_metadata(base_value, element_count)
 }
 
 ///|

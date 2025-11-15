@@ -852,6 +852,30 @@ fn Tycker::visit_switch_stmt(self : Tycker, switch_stmt : SwitchStmt) -> Unit {
 ///|
 fn Tycker::visit_let_stmt(self : Tycker, let_stmt : LetStmt) -> Unit {
   let value_type = self.visit_expr(let_stmt.value)
+  if let_stmt.destructured_names.length() > 0 {
+    let mut index = 0
+    let tuple_types = match value_type.kind {
+      TypeKind::Tuple => value_type.tuple_element_types
+      _ => Array::new()
+    }
+    for token in let_stmt.destructured_names {
+      match token.kind {
+        TokenKind::Underscore => {
+          index = index + 1
+          continue
+        }
+        _ => ()
+      }
+      let element_type = if index < tuple_types.length() {
+        tuple_types[index]
+      } else {
+        Type::unknown()
+      }
+      self.bind_token_with_type(token, element_type)
+      index = index + 1
+    }
+    return
+  }
   let mut binding_type = value_type
   match let_stmt.type_name {
     Some(type_token) =>

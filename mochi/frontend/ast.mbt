@@ -243,6 +243,7 @@ pub struct LetStmt {
   let_keyword : Token
   mut_keyword : Token?
   name : Token
+  destructured_names : Array[Token]
   colon : Token?
   type_name : Token?
   assign : Token
