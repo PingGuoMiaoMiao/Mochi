@@ -967,7 +967,7 @@ fn Tycker::visit_return_stmt(self : Tycker, return_stmt : ReturnStmt) -> Unit {
             "Missing return value for non-Unit function.",
           )
       }
-    Some(_) => ()
+    Some(_) => () 
   }
 }
 
