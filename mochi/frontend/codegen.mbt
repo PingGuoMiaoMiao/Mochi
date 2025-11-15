@@ -48,6 +48,8 @@ priv struct ExprValue {
   array_element_type : String
   array_element_closure_arity : Int
   tuple_element_count : Int
+  struct_name : String
+  enum_name : String
 }
 
 ///|
@@ -57,6 +59,8 @@ priv struct ParamLLVMInfo {
   array_element_type : String
   array_element_closure_arity : Int
   tuple_element_count : Int
+  struct_name : String
+  enum_name : String
 }
 
 ///|
@@ -69,6 +73,8 @@ fn expr_value(code : String, value : String, llvm_type : String) -> ExprValue {
     array_element_type: "",
     array_element_closure_arity: -1,
     tuple_element_count: -1,
+    struct_name: "",
+    enum_name: "",
   }
 }
 
@@ -92,6 +98,8 @@ fn expr_value_with_closure(
     array_element_type: "",
     array_element_closure_arity: -1,
     tuple_element_count: -1,
+    struct_name: "",
+    enum_name: "",
   }
 }
 
@@ -109,6 +117,8 @@ fn expr_value_with_array_metadata(
     array_element_type: element_type,
     array_element_closure_arity: element_closure_arity,
     tuple_element_count: base.tuple_element_count,
+    struct_name: base.struct_name,
+    enum_name: base.enum_name,
   }
 }
 
@@ -125,6 +135,41 @@ fn expr_value_with_tuple_metadata(
     array_element_type: base.array_element_type,
     array_element_closure_arity: base.array_element_closure_arity,
     tuple_element_count: element_count,
+    struct_name: base.struct_name,
+    enum_name: base.enum_name,
+  }
+}
+
+///|
+fn expr_value_with_struct_name(
+  base : ExprValue,
+  struct_name : String,
+) -> ExprValue {
+  {
+    code: base.code,
+    value: base.value,
+    llvm_type: base.llvm_type,
+    closure_arity: base.closure_arity,
+    array_element_type: base.array_element_type,
+    array_element_closure_arity: base.array_element_closure_arity,
+    tuple_element_count: base.tuple_element_count,
+    struct_name,
+    enum_name: base.enum_name,
+  }
+}
+
+///|
+fn expr_value_with_enum_name(base : ExprValue, enum_name : String) -> ExprValue {
+  {
+    code: base.code,
+    value: base.value,
+    llvm_type: base.llvm_type,
+    closure_arity: base.closure_arity,
+    array_element_type: base.array_element_type,
+    array_element_closure_arity: base.array_element_closure_arity,
+    tuple_element_count: base.tuple_element_count,
+    struct_name: base.struct_name,
+    enum_name,
   }
 }
 
@@ -133,6 +178,8 @@ priv struct StatementValue {
   value : String
   llvm_type : String
   tuple_element_count : Int
+  struct_name : String
+  enum_name : String
 }
 
 ///|
@@ -143,11 +190,36 @@ priv struct GlobalVarInfo {
   array_element_type : String
   array_element_closure_arity : Int
   tuple_element_count : Int
+  struct_name : String
+  enum_name : String
+}
+
+///|
+priv struct StructFieldInfo {
+  name : String
+  llvm_type : String
+}
+
+///|
+priv struct EnumVariantInfo {
+  enum_name : String
+  variant_name : String
+  tag : Int
+  param_types : Array[String]
+  payload_struct_name : String
+}
+
+///|
+priv struct EnumInfo {
+  name : String
+  struct_type : String
+  pointer_type : String
+  variants : Array[EnumVariantInfo]
 }
 
 ///|
 fn statement_value(value : String, llvm_type : String) -> StatementValue {
-  { value, llvm_type, tuple_element_count: -1 }
+  { value, llvm_type, tuple_element_count: -1, struct_name: "", enum_name: "" }
 }
 
 ///|
@@ -161,6 +233,8 @@ fn statement_value_from_expr(value : ExprValue) -> StatementValue {
     value: value.value,
     llvm_type: value.llvm_type,
     tuple_element_count: value.tuple_element_count,
+    struct_name: value.struct_name,
+    enum_name: value.enum_name,
   }
 }
 
@@ -169,8 +243,10 @@ fn statement_value_with_tuple(
   value : String,
   llvm_type : String,
   tuple_element_count : Int,
+  struct_name : String,
+  enum_name : String,
 ) -> StatementValue {
-  { value, llvm_type, tuple_element_count }
+  { value, llvm_type, tuple_element_count, struct_name, enum_name }
 }
 
 ///|
@@ -181,6 +257,8 @@ fn global_var_info(
   array_element_type : String,
   array_element_closure_arity : Int,
   tuple_element_count : Int,
+  struct_name : String,
+  enum_name : String,
 ) -> GlobalVarInfo {
   {
     name,
@@ -189,6 +267,8 @@ fn global_var_info(
     array_element_type,
     array_element_closure_arity,
     tuple_element_count,
+    struct_name,
+    enum_name,
   }
 }
 
@@ -206,6 +286,303 @@ fn default_value_for_type(llvm_type : String) -> String {
 ///|
 fn statement_value_has_value(value : StatementValue) -> Bool {
   value.value != ""
+}
+
+///|
+fn llvm_type_from_token(token : Token) -> String {
+  match token.lexeme {
+    "Int" => "i32"
+    "Bool" => "i32"
+    "Double" => "double"
+    "Array" => "i32*"
+    _ => if token.lexeme.has_suffix("*") { token.lexeme } else { "i32" }
+  }
+}
+
+///|
+fn llvm_type_size(llvm_type : String) -> Int {
+  if llvm_type == "double" {
+    8
+  } else if llvm_type.contains("*") {
+    8
+  } else {
+    4
+  }
+}
+
+///|
+fn normalize_float_literal(literal : String) -> String {
+  let sanitized = literal.replace(old="_", new="")
+  if sanitized.contains(".") ||
+    sanitized.contains("e") ||
+    sanitized.contains("E") {
+    sanitized
+  } else {
+    sanitized + ".0"
+  }
+}
+
+///|
+fn struct_def_exists(
+  struct_defs : Array[(String, Array[StructFieldInfo])],
+  name : String,
+) -> Bool {
+  for entry in struct_defs {
+    if entry.0 == name {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn resolve_simple_type_name(
+  type_name : String,
+  struct_defs : Array[(String, Array[StructFieldInfo])],
+  enum_infos : Array[EnumInfo],
+) -> (String, String, String) {
+  if type_name == "Double" {
+    return ("double", "", "")
+  }
+  if type_name == "Bool" || type_name == "Int" {
+    return ("i32", "", "")
+  }
+  if struct_def_exists(struct_defs, type_name) {
+    return ("%" + type_name + "*", type_name, "")
+  }
+  for info in enum_infos {
+    if info.name == type_name {
+      return (info.pointer_type, "", type_name)
+    }
+  }
+  ("i32", "", "")
+}
+
+///|
+fn enum_struct_type_name(enum_name : String) -> String {
+  "%enum." + enum_name
+}
+
+///|
+fn enum_struct_pointer_type(enum_name : String) -> String {
+  enum_struct_type_name(enum_name) + "*"
+}
+
+///|
+fn enum_payload_struct_name(
+  enum_name : String,
+  variant_name : String,
+) -> String {
+  "%enum." + enum_name + "." + variant_name + ".payload"
+}
+
+///|
+fn enum_base_struct_size() -> Int {
+  // tag i32 (4 bytes) + padding + i8* (8 bytes) -> assume 16 bytes for alignment
+  16
+}
+
+///|
+fn enum_payload_size(param_types : Array[String]) -> Int {
+  let mut total = 0
+  for ty in param_types {
+    total = total + llvm_type_size(ty)
+  }
+  total
+}
+
+///|
+fn llvm_gen_enum_variant_value(
+  gen : LLVMGen,
+  variant_info : EnumVariantInfo,
+  args_code : String,
+  arg_values : Array[String],
+  arg_types : Array[String],
+) -> ExprValue {
+  let enum_struct_type = enum_struct_type_name(variant_info.enum_name)
+  let enum_ptr_type = enum_struct_pointer_type(variant_info.enum_name)
+  let mut code = args_code
+  let base_raw = gen.next_temp()
+  code = code +
+    "  " +
+    base_raw +
+    " = call i8* @minimbt_malloc(i32 " +
+    enum_base_struct_size().to_string() +
+    ")\n"
+  let enum_ptr = gen.next_temp()
+  code = code +
+    "  " +
+    enum_ptr +
+    " = bitcast i8* " +
+    base_raw +
+    " to " +
+    enum_ptr_type +
+    "\n"
+  let tag_ptr = gen.next_temp()
+  code = code +
+    "  " +
+    tag_ptr +
+    " = getelementptr " +
+    enum_struct_type +
+    ", " +
+    enum_ptr_type +
+    " " +
+    enum_ptr +
+    ", i32 0, i32 0\n"
+  code = code +
+    "  store i32 " +
+    variant_info.tag.to_string() +
+    ", i32* " +
+    tag_ptr +
+    "\n"
+  let payload_field_ptr = gen.next_temp()
+  code = code +
+    "  " +
+    payload_field_ptr +
+    " = getelementptr " +
+    enum_struct_type +
+    ", " +
+    enum_ptr_type +
+    " " +
+    enum_ptr +
+    ", i32 0, i32 1\n"
+  let mut payload_value = "null"
+  if variant_info.param_types.length() > 0 {
+    let payload_size = enum_payload_size(variant_info.param_types)
+    let payload_raw = gen.next_temp()
+    code = code +
+      "  " +
+      payload_raw +
+      " = call i8* @minimbt_malloc(i32 " +
+      payload_size.to_string() +
+      ")\n"
+    let payload_struct_ptr_type = variant_info.payload_struct_name + "*"
+    let payload_struct_ptr = gen.next_temp()
+    code = code +
+      "  " +
+      payload_struct_ptr +
+      " = bitcast i8* " +
+      payload_raw +
+      " to " +
+      payload_struct_ptr_type +
+      "\n"
+    let mut field_index = 0
+    while field_index < variant_info.param_types.length() {
+      let field_type = variant_info.param_types[field_index]
+      let field_ptr = gen.next_temp()
+      code = code +
+        "  " +
+        field_ptr +
+        " = getelementptr " +
+        variant_info.payload_struct_name +
+        ", " +
+        payload_struct_ptr_type +
+        " " +
+        payload_struct_ptr +
+        ", i32 0, i32 " +
+        field_index.to_string() +
+        "\n"
+      let mut stored_value = default_value_for_type(field_type)
+      if field_index < arg_values.length() {
+        let mut arg_temp = arg_values[field_index]
+        let mut arg_type = if field_index < arg_types.length() {
+          arg_types[field_index]
+        } else {
+          "i32"
+        }
+        if arg_type == "" {
+          arg_type = "i32"
+        }
+        if arg_type != field_type {
+          let (cast_code, cast_temp) = cast_value_to_type(
+            gen, arg_temp, arg_type, field_type,
+          )
+          code = code + cast_code
+          arg_temp = cast_temp
+        }
+        stored_value = arg_temp
+      }
+      code = code +
+        "  store " +
+        field_type +
+        " " +
+        stored_value +
+        ", " +
+        field_type +
+        "* " +
+        field_ptr +
+        "\n"
+      field_index = field_index + 1
+    }
+    let payload_bitcast = gen.next_temp()
+    code = code +
+      "  " +
+      payload_bitcast +
+      " = bitcast " +
+      payload_struct_ptr_type +
+      " " +
+      payload_struct_ptr +
+      " to i8*\n"
+    payload_value = payload_bitcast
+  }
+  code = code +
+    "  store i8* " +
+    payload_value +
+    ", i8** " +
+    payload_field_ptr +
+    "\n"
+  let base_value = expr_value(code, enum_ptr, enum_ptr_type)
+  expr_value_with_enum_name(base_value, variant_info.enum_name)
+}
+
+///|
+fn cast_value_to_type(
+  gen : LLVMGen,
+  value : String,
+  from_type : String,
+  target_type : String,
+) -> (String, String) {
+  if target_type == "" || from_type == "" || from_type == target_type {
+    return ("", value)
+  }
+  if target_type == "double" && from_type == "i32" {
+    let temp = gen.next_temp()
+    return ("  " + temp + " = sitofp i32 " + value + " to double\n", temp)
+  }
+  if target_type == "i32" && from_type == "double" {
+    let temp = gen.next_temp()
+    return ("  " + temp + " = fptosi double " + value + " to i32\n", temp)
+  }
+  if target_type == "i32" && from_type.contains("*") {
+    let temp = gen.next_temp()
+    return (
+      "  " + temp + " = ptrtoint " + from_type + " " + value + " to i32\n",
+      temp,
+    )
+  }
+  if target_type.contains("*") && from_type.contains("*") {
+    let temp = gen.next_temp()
+    return (
+      "  " +
+      temp +
+      " = bitcast " +
+      from_type +
+      " " +
+      value +
+      " to " +
+      target_type +
+      "\n",
+      temp,
+    )
+  }
+  if target_type.contains("*") && from_type == "i32" {
+    let temp = gen.next_temp()
+    return (
+      "  " + temp + " = inttoptr i32 " + value + " to " + target_type + "\n",
+      temp,
+    )
+  }
+  ("", value)
 }
 
 ///|
@@ -276,6 +653,27 @@ fn get_builtin_function(name : String) -> BuiltinFuncInfo? {
     "abs_float" =>
       Some({
         ir_name: "@minimbt_abs_float",
+        return_type: "double",
+        is_void: false,
+        param_types: builtin_param_types_one("double"),
+      })
+    "sqrt" =>
+      Some({
+        ir_name: "@sqrt",
+        return_type: "double",
+        is_void: false,
+        param_types: builtin_param_types_one("double"),
+      })
+    "sin" =>
+      Some({
+        ir_name: "@sin",
+        return_type: "double",
+        is_void: false,
+        param_types: builtin_param_types_one("double"),
+      })
+    "cos" =>
+      Some({
+        ir_name: "@cos",
         return_type: "double",
         is_void: false,
         param_types: builtin_param_types_one("double"),
@@ -403,6 +801,9 @@ fn builtin_function_names() -> Array[String] {
   names.push("float_of_int")
   names.push("truncate")
   names.push("abs_float")
+  names.push("sqrt")
+  names.push("sin")
+  names.push("cos")
   names
 }
 
@@ -442,7 +843,8 @@ priv struct LLVMGen {
   mut var_counter : Int // 临时变量计数器
   mut label_counter : Int // 标签计数器
   var_map : Array[(String, String, String, Int)] // 变量 -> (alloca, llvm_type, closure_arity)
-  struct_defs : Array[(String, Array[String])] // 结构体定义：(结构体名, 字段名列表)
+  struct_defs : Array[(String, Array[StructFieldInfo])] // 结构体定义：(结构体名, 字段信息列表)
+  enum_defs : Array[EnumInfo]
   current_function : String // 当前函数名
   current_function_id : Int
   closure_metadata : ClosureMetadata
@@ -451,6 +853,8 @@ priv struct LLVMGen {
   global_vars : Array[GlobalVarInfo]
   is_top_level_context : Bool
   tuple_metadata : Array[(String, Int)]
+  struct_metadata : Array[(String, String)]
+  enum_value_metadata : Array[(String, String)]
   current_env_param : String
   captured_var_registry : Array[(Int, String, String, Int)]
 }
@@ -458,6 +862,7 @@ priv struct LLVMGen {
 ///|
 fn LLVMGen::new(
   metadata : ClosureMetadata,
+  enum_defs : Array[EnumInfo],
   global_vars : Array[GlobalVarInfo],
   is_top_level : Bool,
   captured_var_registry : Array[(Int, String, String, Int)],
@@ -467,6 +872,7 @@ fn LLVMGen::new(
     label_counter: 0,
     var_map: Array::new(),
     struct_defs: Array::new(),
+    enum_defs,
     current_function: "",
     current_function_id: -1,
     closure_metadata: metadata,
@@ -475,6 +881,8 @@ fn LLVMGen::new(
     global_vars,
     is_top_level_context: is_top_level,
     tuple_metadata: Array::new(),
+    struct_metadata: Array::new(),
+    enum_value_metadata: Array::new(),
     current_env_param: "",
     captured_var_registry,
   }
@@ -485,6 +893,7 @@ fn LLVMGen::new_with_function(
   func_name : String,
   func_id : Int,
   metadata : ClosureMetadata,
+  enum_defs : Array[EnumInfo],
   return_type : String,
   global_vars : Array[GlobalVarInfo],
   is_nested_function : Bool,
@@ -495,6 +904,7 @@ fn LLVMGen::new_with_function(
     label_counter: 0,
     var_map: Array::new(),
     struct_defs: Array::new(),
+    enum_defs,
     current_function: func_name,
     current_function_id: func_id,
     closure_metadata: metadata,
@@ -503,6 +913,8 @@ fn LLVMGen::new_with_function(
     global_vars,
     is_top_level_context: false,
     tuple_metadata: Array::new(),
+    struct_metadata: Array::new(),
+    enum_value_metadata: Array::new(),
     current_env_param: if is_nested_function {
       "%env"
     } else {
@@ -690,6 +1102,133 @@ fn LLVMGen::clear_tuple_metadata(self : LLVMGen, name : String) -> Unit {
     }
     index = index + 1
   }
+}
+
+///|
+fn LLVMGen::set_struct_metadata(
+  self : LLVMGen,
+  name : String,
+  struct_name : String,
+) -> Unit {
+  let mut index = 0
+  while index < self.struct_metadata.length() {
+    if self.struct_metadata[index].0 == name {
+      self.struct_metadata[index] = (name, struct_name)
+      return
+    }
+    index = index + 1
+  }
+  self.struct_metadata.push((name, struct_name))
+}
+
+///|
+fn LLVMGen::get_struct_metadata(self : LLVMGen, name : String) -> String {
+  for entry in self.struct_metadata {
+    if entry.0 == name {
+      return entry.1
+    }
+  }
+  ""
+}
+
+///|
+fn LLVMGen::clear_struct_metadata(self : LLVMGen, name : String) -> Unit {
+  let mut index = 0
+  while index < self.struct_metadata.length() {
+    if self.struct_metadata[index].0 == name {
+      self.struct_metadata[index] = ("", "")
+      return
+    }
+    index = index + 1
+  }
+}
+
+///|
+fn LLVMGen::set_enum_metadata(
+  self : LLVMGen,
+  name : String,
+  enum_name : String,
+) -> Unit {
+  let mut index = 0
+  while index < self.enum_value_metadata.length() {
+    if self.enum_value_metadata[index].0 == name {
+      self.enum_value_metadata[index] = (name, enum_name)
+      return
+    }
+    index = index + 1
+  }
+  self.enum_value_metadata.push((name, enum_name))
+}
+
+///|
+fn LLVMGen::get_enum_metadata(self : LLVMGen, name : String) -> String {
+  for entry in self.enum_value_metadata {
+    if entry.0 == name && entry.1 != "" {
+      return entry.1
+    }
+  }
+  ""
+}
+
+///|
+fn LLVMGen::clear_enum_metadata(self : LLVMGen, name : String) -> Unit {
+  let mut index = 0
+  while index < self.enum_value_metadata.length() {
+    if self.enum_value_metadata[index].0 == name {
+      self.enum_value_metadata[index] = ("", "")
+      return
+    }
+    index = index + 1
+  }
+}
+
+///|
+fn LLVMGen::struct_name_for_type(self : LLVMGen, llvm_type : String) -> String {
+  for entry in self.struct_defs {
+    let expected_type = "%" + entry.0 + "*"
+    if llvm_type == expected_type {
+      return entry.0
+    }
+  }
+  ""
+}
+
+///|
+fn LLVMGen::get_enum_info(self : LLVMGen, enum_name : String) -> EnumInfo? {
+  for info in self.enum_defs {
+    if info.name == enum_name {
+      return Some(info)
+    }
+  }
+  None
+}
+
+///|
+fn LLVMGen::get_enum_variant_info(
+  self : LLVMGen,
+  variant_name : String,
+) -> EnumVariantInfo? {
+  for info in self.enum_defs {
+    for variant in info.variants {
+      if variant.variant_name == variant_name {
+        return Some(variant)
+      }
+    }
+  }
+  None
+}
+
+///|
+fn LLVMGen::find_struct_fields(
+  self : LLVMGen,
+  struct_name : String,
+) -> Array[StructFieldInfo]? {
+  for entry in self.struct_defs {
+    if entry.0 == struct_name {
+      return Some(entry.1)
+    }
+  }
+  None
 }
 
 ///|
@@ -986,11 +1525,17 @@ fn default_param_info() -> ParamLLVMInfo {
     array_element_type: "",
     array_element_closure_arity: -1,
     tuple_element_count: -1,
+    struct_name: "",
+    enum_name: "",
   }
 }
 
 ///|
-fn function_param_llvm_info(param : FunctionParam) -> ParamLLVMInfo {
+fn function_param_llvm_info(
+  param : FunctionParam,
+  struct_defs : Array[(String, Array[StructFieldInfo])],
+  enum_infos : Array[EnumInfo],
+) -> ParamLLVMInfo {
   if param.is_function_type {
     let arity = param.function_param_types.length()
     return {
@@ -999,6 +1544,8 @@ fn function_param_llvm_info(param : FunctionParam) -> ParamLLVMInfo {
       array_element_type: "",
       array_element_closure_arity: -1,
       tuple_element_count: -1,
+      struct_name: "",
+      enum_name: "",
     }
   }
   if param.is_tuple_type {
@@ -1008,6 +1555,8 @@ fn function_param_llvm_info(param : FunctionParam) -> ParamLLVMInfo {
       array_element_type: "",
       array_element_closure_arity: -1,
       tuple_element_count: param.tuple_element_types.length(),
+      struct_name: "",
+      enum_name: "",
     }
   }
   match param.type_name {
@@ -1019,6 +1568,8 @@ fn function_param_llvm_info(param : FunctionParam) -> ParamLLVMInfo {
           array_element_type: "",
           array_element_closure_arity: -1,
           tuple_element_count: -1,
+          struct_name: "",
+          enum_name: "",
         }
       }
       if type_token.lexeme == "Array" {
@@ -1049,6 +1600,8 @@ fn function_param_llvm_info(param : FunctionParam) -> ParamLLVMInfo {
           array_element_type: element_type,
           array_element_closure_arity: element_closure_arity,
           tuple_element_count: -1,
+          struct_name: "",
+          enum_name: "",
         }
       }
       if type_token.lexeme == "Bool" {
@@ -1056,6 +1609,22 @@ fn function_param_llvm_info(param : FunctionParam) -> ParamLLVMInfo {
       }
       if type_token.lexeme == "Int" {
         return default_param_info()
+      }
+      let (resolved_type, struct_name, enum_name) = resolve_simple_type_name(
+        type_token.lexeme,
+        struct_defs,
+        enum_infos,
+      )
+      if resolved_type != "i32" || struct_name != "" || enum_name != "" {
+        return {
+          llvm_type: resolved_type,
+          closure_arity: -1,
+          array_element_type: "",
+          array_element_closure_arity: -1,
+          tuple_element_count: -1,
+          struct_name,
+          enum_name,
+        }
       }
     }
     None => ()
@@ -1188,6 +1757,99 @@ fn generate_closure_struct_definitions(metadata : ClosureMetadata) -> String {
     definitions = definitions + "\n"
   }
   definitions
+}
+
+///|
+fn enum_payload_param_type(
+  token : Token,
+  struct_defs_map : Array[(String, Array[StructFieldInfo])],
+) -> String {
+  if token.lexeme == "Double" {
+    "double"
+  } else if token.lexeme == "Bool" || token.lexeme == "Int" {
+    "i32"
+  } else if struct_def_exists(struct_defs_map, token.lexeme) {
+    "%" + token.lexeme + "*"
+  } else {
+    "i32"
+  }
+}
+
+///|
+fn build_enum_info(
+  enum_def : EnumDef,
+  struct_defs_map : Array[(String, Array[StructFieldInfo])],
+) -> EnumInfo {
+  let enum_name = enum_def.name.lexeme
+  let struct_type = enum_struct_type_name(enum_name)
+  let pointer_type = enum_struct_pointer_type(enum_name)
+  let variants : Array[EnumVariantInfo] = Array::new()
+  let mut tag = 0
+  for variant in enum_def.variants {
+    let param_types : Array[String] = Array::new()
+    for token in variant.param_types {
+      param_types.push(enum_payload_param_type(token, struct_defs_map))
+    }
+    let payload_struct_name = if param_types.length() > 0 {
+      enum_payload_struct_name(enum_name, variant.name.lexeme)
+    } else {
+      ""
+    }
+    let info : EnumVariantInfo = {
+      enum_name,
+      variant_name: variant.name.lexeme,
+      tag,
+      param_types,
+      payload_struct_name,
+    }
+    variants.push(info)
+    tag = tag + 1
+  }
+  { name: enum_name, struct_type, pointer_type, variants }
+}
+
+///|
+fn build_enum_infos(
+  statements : Array[Stmt],
+  struct_defs_map : Array[(String, Array[StructFieldInfo])],
+) -> Array[EnumInfo] {
+  let infos : Array[EnumInfo] = Array::new()
+  for stmt in statements {
+    match stmt.kind {
+      StmtKind::Enum(enum_def) =>
+        infos.push(build_enum_info(enum_def, struct_defs_map))
+      _ => ()
+    }
+  }
+  infos
+}
+
+///|
+fn generate_enum_type_definitions(enum_infos : Array[EnumInfo]) -> String {
+  if enum_infos.length() == 0 {
+    return ""
+  }
+  let mut output = ""
+  for info in enum_infos {
+    output = output + info.struct_type + " = type { i32, i8* }\n"
+    for variant in info.variants {
+      if variant.param_types.length() > 0 {
+        let mut line = variant.payload_struct_name + " = type { "
+        let mut first = true
+        for ty in variant.param_types {
+          if first {
+            line = line + ty
+            first = false
+          } else {
+            line = line + ", " + ty
+          }
+        }
+        line = line + " }\n"
+        output = output + line
+      }
+    }
+  }
+  output + "\n"
 }
 
 ///|
@@ -1728,10 +2390,21 @@ fn collect_free_vars_in_expr(
 fn collect_global_vars(
   statements : Array[Stmt],
   closure_metadata : ClosureMetadata,
+  struct_defs_map : Array[(String, Array[StructFieldInfo])],
+  enum_infos : Array[EnumInfo],
 ) -> Array[GlobalVarInfo] {
   let globals : Array[GlobalVarInfo] = Array::new()
   let registry : Array[(Int, String, String, Int)] = Array::new()
-  let gen = LLVMGen::new(closure_metadata.clone(), globals, true, registry)
+  let gen = LLVMGen::new(
+    closure_metadata.clone(),
+    enum_infos,
+    globals,
+    true,
+    registry,
+  )
+  for struct_def in struct_defs_map {
+    gen.struct_defs.push(struct_def)
+  }
   for stmt in statements {
     match stmt.kind {
       StmtKind::Let(let_stmt) => ignore(llvm_gen_let(gen, let_stmt))
@@ -1746,42 +2419,51 @@ fn generate_llvm(statements : Array[Stmt]) -> String {
   let mut output = "target triple = \"riscv64-unknown-linux-gnu\"\n\n"
   let closure_metadata = analyze_closures(statements)
   let captured_var_registry : Array[(Int, String, String, Int)] = Array::new()
-  let global_vars = collect_global_vars(statements, closure_metadata.clone())
 
   // 生成外部函数声明
   output = output + generate_external_declarations()
   output = output + generate_closure_env_type_definitions(closure_metadata)
   output = output + generate_closure_struct_definitions(closure_metadata)
-  output = output + generate_global_declarations(global_vars)
 
   // 第一遍：收集结构体定义并生成类型定义
-  let struct_defs_map : Array[(String, Array[String])] = Array::new()
+  let struct_defs_map : Array[(String, Array[StructFieldInfo])] = Array::new()
   for stmt in statements {
     match stmt.kind {
       StmtKind::Struct(struct_def) => {
         let struct_name = struct_def.name.lexeme
-        let field_names : Array[String] = Array::new()
-        for field in struct_def.fields {
-          field_names.push(field.name.lexeme)
-        }
-        struct_defs_map.push((struct_name, field_names))
-        // 生成结构体类型定义
+        let field_infos : Array[StructFieldInfo] = Array::new()
         output = output + "%" + struct_name + " = type { "
         let mut first = true
-        for _field in struct_def.fields {
+        for field in struct_def.fields {
+          let field_type = llvm_type_from_token(field.type_name)
+          let info : StructFieldInfo = {
+            name: field.name.lexeme,
+            llvm_type: field_type,
+          }
+          field_infos.push(info)
           if first {
-            output = output + "i32"
+            output = output + field_type
             first = false
           } else {
-            output = output + ", i32"
+            output = output + ", " + field_type
           }
         }
+        struct_defs_map.push((struct_name, field_infos))
         output = output + " }\n"
       }
       _ => ()
     }
   }
   output = output + "\n"
+  let enum_infos = build_enum_infos(statements, struct_defs_map)
+  output = output + generate_enum_type_definitions(enum_infos)
+  let global_vars = collect_global_vars(
+    statements,
+    closure_metadata.clone(),
+    struct_defs_map,
+    enum_infos,
+  )
+  output = output + generate_global_declarations(global_vars)
 
   // 第二遍：生成所有函数定义（包含嵌套函数）
   let main_statements : Array[Stmt] = Array::new()
@@ -1797,7 +2479,8 @@ fn generate_llvm(statements : Array[Stmt]) -> String {
       has_main_function = true
     }
     let func_code = llvm_gen_function(
-      struct_defs_map, function_stmt, closure_metadata, global_vars, captured_var_registry,
+      struct_defs_map, enum_infos, function_stmt, closure_metadata, global_vars,
+      captured_var_registry,
     )
     output = output + func_code
   }
@@ -1815,15 +2498,15 @@ fn generate_llvm(statements : Array[Stmt]) -> String {
   if main_statements.length() > 0 {
     if has_main_function {
       let init_code = llvm_gen_top_level_function(
-        "@minimbt_init_globals", struct_defs_map, main_statements, closure_metadata,
+        "@minimbt_init_globals", struct_defs_map, enum_infos, main_statements, closure_metadata,
         global_vars, captured_var_registry,
       )
       output = output + init_code
       initializer_emitted = true
     } else {
       let main_code = llvm_gen_top_level_function(
-        "@minimbt_main", struct_defs_map, main_statements, closure_metadata, global_vars,
-        captured_var_registry,
+        "@minimbt_main", struct_defs_map, enum_infos, main_statements, closure_metadata,
+        global_vars, captured_var_registry,
       )
       output = output + main_code
       emitted_minimbt_main = true
@@ -1863,7 +2546,8 @@ fn generate_external_declarations() -> String {
 // 生成顶层语句函数（初始化或脚本 main）
 fn llvm_gen_top_level_function(
   function_name : String,
-  struct_defs_map : Array[(String, Array[String])],
+  struct_defs_map : Array[(String, Array[StructFieldInfo])],
+  enum_infos : Array[EnumInfo],
   main_statements : Array[Stmt],
   closure_metadata : ClosureMetadata,
   global_vars : Array[GlobalVarInfo],
@@ -1873,6 +2557,7 @@ fn llvm_gen_top_level_function(
   output = output + "entry:\n"
   let gen = LLVMGen::new(
     closure_metadata.clone(),
+    enum_infos,
     global_vars,
     true,
     captured_var_registry,
@@ -2031,6 +2716,12 @@ fn llvm_gen_literal(gen : LLVMGen, token : Token) -> ExprValue {
           expr_value("", temp, "i32")
         }
       }
+    TokenKind::LiteralFloat => {
+      let literal = normalize_float_literal(token.lexeme)
+      let temp = gen.next_temp()
+      let code = "  " + temp + " = fadd double 0.000000e+00, " + literal + "\n"
+      expr_value(code, temp, "double")
+    }
     TokenKind::LParen =>
       // Unit literal: () - 直接使用常量 0
       expr_value("", "0", "i32")
@@ -2060,21 +2751,29 @@ fn llvm_gen_ident(gen : LLVMGen, token : Token) -> ExprValue {
       if closure_arity >= 0 {
         expr_value_with_closure(code, temp, var_type, closure_arity)
       } else {
-        let base_value = expr_value(code, temp, var_type)
+        let mut base_value = expr_value(code, temp, var_type)
         let (element_type, element_closure_arity) = gen.get_array_metadata(
           token.lexeme,
         )
         if element_type != "" {
-          expr_value_with_array_metadata(
+          base_value = expr_value_with_array_metadata(
             base_value, element_type, element_closure_arity,
           )
         } else {
           let tuple_count = gen.get_tuple_metadata(token.lexeme)
           if tuple_count >= 0 {
-            expr_value_with_tuple_metadata(base_value, tuple_count)
-          } else {
-            base_value
+            base_value = expr_value_with_tuple_metadata(base_value, tuple_count)
           }
+        }
+        let struct_name = gen.get_struct_metadata(token.lexeme)
+        if struct_name != "" {
+          base_value = expr_value_with_struct_name(base_value, struct_name)
+        }
+        let enum_name = gen.get_enum_metadata(token.lexeme)
+        if enum_name != "" {
+          expr_value_with_enum_name(base_value, enum_name)
+        } else {
+          base_value
         }
       }
     }
@@ -2099,20 +2798,34 @@ fn llvm_gen_ident(gen : LLVMGen, token : Token) -> ExprValue {
               info.closure_arity,
             )
           } else {
-            let base_value = expr_value(code, temp, info.llvm_type)
+            let mut base_value = expr_value(code, temp, info.llvm_type)
             if info.array_element_type != "" {
-              expr_value_with_array_metadata(
+              base_value = expr_value_with_array_metadata(
                 base_value,
                 info.array_element_type,
                 info.array_element_closure_arity,
               )
             } else if info.tuple_element_count >= 0 {
-              expr_value_with_tuple_metadata(
+              base_value = expr_value_with_tuple_metadata(
                 base_value,
                 info.tuple_element_count,
               )
+            }
+            if info.struct_name != "" {
+              base_value = expr_value_with_struct_name(
+                base_value,
+                info.struct_name,
+              )
+            }
+            if info.enum_name != "" {
+              expr_value_with_enum_name(base_value, info.enum_name)
             } else {
-              base_value
+              let enum_name = gen.get_enum_metadata(token.lexeme)
+              if enum_name != "" {
+                expr_value_with_enum_name(base_value, enum_name)
+              } else {
+                base_value
+              }
             }
           }
         }
@@ -2124,6 +2837,17 @@ fn llvm_gen_ident(gen : LLVMGen, token : Token) -> ExprValue {
           match gen.find_top_level_function_entry(token.lexeme) {
             Some(entry) => llvm_gen_create_closure(gen, entry)
             None => {
+              match gen.get_enum_variant_info(token.lexeme) {
+                Some(variant_info) =>
+                  if variant_info.param_types.length() == 0 {
+                    let empty_values : Array[String] = Array::new()
+                    let empty_types : Array[String] = Array::new()
+                    return llvm_gen_enum_variant_value(
+                      gen, variant_info, "", empty_values, empty_types,
+                    )
+                  }
+                None => ()
+              }
               let temp = gen.next_temp()
               expr_value("", temp, "i32")
             }
@@ -2356,16 +3080,87 @@ fn llvm_gen_create_closure(gen : LLVMGen, entry : ClosureEntry) -> ExprValue {
 fn llvm_gen_binary(gen : LLVMGen, binary_expr : BinaryExpr) -> ExprValue {
   let left_value = llvm_gen_expr_value(gen, binary_expr.left)
   let right_value = llvm_gen_expr_value(gen, binary_expr.right)
-  let temp = gen.next_temp()
-  let op_code = llvm_gen_binary_op(
-    gen,
-    binary_expr.operator,
-    left_value.value,
-    right_value.value,
-    temp,
-  )
-  let code = left_value.code + right_value.code + op_code
-  expr_value(code, temp, "i32")
+  match binary_expr.operator.kind {
+    TokenKind::AmpAmp | TokenKind::PipePipe => {
+      let mut left_code = left_value.code
+      let mut left_temp = left_value.value
+      if left_value.llvm_type != "i32" {
+        let (cast_code, cast_temp) = cast_value_to_type(
+          gen,
+          left_temp,
+          left_value.llvm_type,
+          "i32",
+        )
+        left_code = left_code + cast_code
+        left_temp = cast_temp
+      }
+      let mut right_code = right_value.code
+      let mut right_temp = right_value.value
+      if right_value.llvm_type != "i32" {
+        let (cast_code, cast_temp) = cast_value_to_type(
+          gen,
+          right_temp,
+          right_value.llvm_type,
+          "i32",
+        )
+        right_code = right_code + cast_code
+        right_temp = cast_temp
+      }
+      let result_temp = gen.next_temp()
+      let op_code = llvm_gen_logical_binary_op(
+        gen,
+        binary_expr.operator,
+        left_temp,
+        right_temp,
+        result_temp,
+      )
+      let code = left_code + right_code + op_code
+      expr_value(code, result_temp, "i32")
+    }
+    _ => {
+      let mut left_code = left_value.code
+      let mut left_temp = left_value.value
+      let mut left_type = left_value.llvm_type
+      if left_type == "" {
+        left_type = "i32"
+      }
+      let mut right_code = right_value.code
+      let mut right_temp = right_value.value
+      let mut right_type = right_value.llvm_type
+      if right_type == "" {
+        right_type = "i32"
+      }
+      let mut operand_type = "i32"
+      if left_type == "double" || right_type == "double" {
+        operand_type = "double"
+      }
+      if left_type != operand_type {
+        let (cast_code, cast_temp) = cast_value_to_type(
+          gen, left_temp, left_type, operand_type,
+        )
+        left_code = left_code + cast_code
+        left_temp = cast_temp
+      }
+      if right_type != operand_type {
+        let (cast_code, cast_temp) = cast_value_to_type(
+          gen, right_temp, right_type, operand_type,
+        )
+        right_code = right_code + cast_code
+        right_temp = cast_temp
+      }
+      let result_temp = gen.next_temp()
+      let (op_code, result_type) = llvm_gen_binary_op(
+        gen,
+        binary_expr.operator,
+        left_temp,
+        right_temp,
+        result_temp,
+        operand_type,
+      )
+      let code = left_code + right_code + op_code
+      expr_value(code, result_temp, result_type)
+    }
+  }
 }
 
 ///|
@@ -2376,102 +3171,354 @@ fn llvm_gen_binary_op(
   left_temp : String,
   right_temp : String,
   result_temp : String,
-) -> String {
+  operand_type : String,
+) -> (String, String) {
   match operator.kind {
     TokenKind::Plus =>
-      "  " + result_temp + " = add i32 " + left_temp + ", " + right_temp + "\n"
+      if operand_type == "double" {
+        (
+          "  " +
+          result_temp +
+          " = fadd double " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n",
+          "double",
+        )
+      } else {
+        (
+          "  " +
+          result_temp +
+          " = add i32 " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n",
+          "i32",
+        )
+      }
     TokenKind::Minus =>
-      "  " + result_temp + " = sub i32 " + left_temp + ", " + right_temp + "\n"
+      if operand_type == "double" {
+        (
+          "  " +
+          result_temp +
+          " = fsub double " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n",
+          "double",
+        )
+      } else {
+        (
+          "  " +
+          result_temp +
+          " = sub i32 " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n",
+          "i32",
+        )
+      }
     TokenKind::Star =>
-      "  " + result_temp + " = mul i32 " + left_temp + ", " + right_temp + "\n"
+      if operand_type == "double" {
+        (
+          "  " +
+          result_temp +
+          " = fmul double " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n",
+          "double",
+        )
+      } else {
+        (
+          "  " +
+          result_temp +
+          " = mul i32 " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n",
+          "i32",
+        )
+      }
     TokenKind::Slash =>
-      "  " + result_temp + " = sdiv i32 " + left_temp + ", " + right_temp + "\n"
+      if operand_type == "double" {
+        (
+          "  " +
+          result_temp +
+          " = fdiv double " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n",
+          "double",
+        )
+      } else {
+        (
+          "  " +
+          result_temp +
+          " = sdiv i32 " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n",
+          "i32",
+        )
+      }
     TokenKind::Percent =>
-      "  " + result_temp + " = srem i32 " + left_temp + ", " + right_temp + "\n"
+      if operand_type == "double" {
+        (
+          "  " +
+          result_temp +
+          " = frem double " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n",
+          "double",
+        )
+      } else {
+        (
+          "  " +
+          result_temp +
+          " = srem i32 " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n",
+          "i32",
+        )
+      }
     TokenKind::Less => {
       let cmp_temp = gen.next_temp()
-      "  " +
-      cmp_temp +
-      " = icmp slt i32 " +
-      left_temp +
-      ", " +
-      right_temp +
-      "\n  " +
-      result_temp +
-      " = zext i1 " +
-      cmp_temp +
-      " to i32\n"
+      if operand_type == "double" {
+        (
+          "  " +
+          cmp_temp +
+          " = fcmp olt double " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n  " +
+          result_temp +
+          " = zext i1 " +
+          cmp_temp +
+          " to i32\n",
+          "i32",
+        )
+      } else {
+        (
+          "  " +
+          cmp_temp +
+          " = icmp slt i32 " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n  " +
+          result_temp +
+          " = zext i1 " +
+          cmp_temp +
+          " to i32\n",
+          "i32",
+        )
+      }
     }
     TokenKind::Greater => {
       let cmp_temp = gen.next_temp()
-      "  " +
-      cmp_temp +
-      " = icmp sgt i32 " +
-      left_temp +
-      ", " +
-      right_temp +
-      "\n  " +
-      result_temp +
-      " = zext i1 " +
-      cmp_temp +
-      " to i32\n"
+      if operand_type == "double" {
+        (
+          "  " +
+          cmp_temp +
+          " = fcmp ogt double " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n  " +
+          result_temp +
+          " = zext i1 " +
+          cmp_temp +
+          " to i32\n",
+          "i32",
+        )
+      } else {
+        (
+          "  " +
+          cmp_temp +
+          " = icmp sgt i32 " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n  " +
+          result_temp +
+          " = zext i1 " +
+          cmp_temp +
+          " to i32\n",
+          "i32",
+        )
+      }
     }
     TokenKind::LessEqual => {
       let cmp_temp = gen.next_temp()
-      "  " +
-      cmp_temp +
-      " = icmp sle i32 " +
-      left_temp +
-      ", " +
-      right_temp +
-      "\n  " +
-      result_temp +
-      " = zext i1 " +
-      cmp_temp +
-      " to i32\n"
+      if operand_type == "double" {
+        (
+          "  " +
+          cmp_temp +
+          " = fcmp ole double " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n  " +
+          result_temp +
+          " = zext i1 " +
+          cmp_temp +
+          " to i32\n",
+          "i32",
+        )
+      } else {
+        (
+          "  " +
+          cmp_temp +
+          " = icmp sle i32 " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n  " +
+          result_temp +
+          " = zext i1 " +
+          cmp_temp +
+          " to i32\n",
+          "i32",
+        )
+      }
     }
     TokenKind::GreaterEqual => {
       let cmp_temp = gen.next_temp()
-      "  " +
-      cmp_temp +
-      " = icmp sge i32 " +
-      left_temp +
-      ", " +
-      right_temp +
-      "\n  " +
-      result_temp +
-      " = zext i1 " +
-      cmp_temp +
-      " to i32\n"
+      if operand_type == "double" {
+        (
+          "  " +
+          cmp_temp +
+          " = fcmp oge double " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n  " +
+          result_temp +
+          " = zext i1 " +
+          cmp_temp +
+          " to i32\n",
+          "i32",
+        )
+      } else {
+        (
+          "  " +
+          cmp_temp +
+          " = icmp sge i32 " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n  " +
+          result_temp +
+          " = zext i1 " +
+          cmp_temp +
+          " to i32\n",
+          "i32",
+        )
+      }
     }
     TokenKind::EqualEqual => {
       let cmp_temp = gen.next_temp()
-      "  " +
-      cmp_temp +
-      " = icmp eq i32 " +
-      left_temp +
-      ", " +
-      right_temp +
-      "\n  " +
-      result_temp +
-      " = zext i1 " +
-      cmp_temp +
-      " to i32\n"
+      if operand_type == "double" {
+        (
+          "  " +
+          cmp_temp +
+          " = fcmp oeq double " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n  " +
+          result_temp +
+          " = zext i1 " +
+          cmp_temp +
+          " to i32\n",
+          "i32",
+        )
+      } else {
+        (
+          "  " +
+          cmp_temp +
+          " = icmp eq i32 " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n  " +
+          result_temp +
+          " = zext i1 " +
+          cmp_temp +
+          " to i32\n",
+          "i32",
+        )
+      }
     }
     TokenKind::BangEqual => {
       let cmp_temp = gen.next_temp()
-      "  " +
-      cmp_temp +
-      " = icmp ne i32 " +
-      left_temp +
-      ", " +
-      right_temp +
-      "\n  " +
-      result_temp +
-      " = zext i1 " +
-      cmp_temp +
-      " to i32\n"
+      if operand_type == "double" {
+        (
+          "  " +
+          cmp_temp +
+          " = fcmp one double " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n  " +
+          result_temp +
+          " = zext i1 " +
+          cmp_temp +
+          " to i32\n",
+          "i32",
+        )
+      } else {
+        (
+          "  " +
+          cmp_temp +
+          " = icmp ne i32 " +
+          left_temp +
+          ", " +
+          right_temp +
+          "\n  " +
+          result_temp +
+          " = zext i1 " +
+          cmp_temp +
+          " to i32\n",
+          "i32",
+        )
+      }
     }
+    _ =>
+      (
+        "  " + result_temp + " = add i32 0, 0\n",
+        if operand_type == "double" {
+          "double"
+        } else {
+          "i32"
+        },
+      )
+  }
+}
+
+///|
+fn llvm_gen_logical_binary_op(
+  gen : LLVMGen,
+  operator : Token,
+  left_temp : String,
+  right_temp : String,
+  result_temp : String,
+) -> String {
+  match operator.kind {
     TokenKind::AmpAmp => {
       let cmp1_temp = gen.next_temp()
       let cmp2_temp = gen.next_temp()
@@ -2531,24 +3578,48 @@ fn llvm_gen_unary(gen : LLVMGen, unary_expr : UnaryExpr) -> ExprValue {
   match unary_expr.operator.kind {
     TokenKind::Minus => {
       let operand_value = llvm_gen_expr_value(gen, unary_expr.operand)
+      let mut code = operand_value.code
+      let value = operand_value.value
+      let mut value_type = operand_value.llvm_type
+      if value_type == "" {
+        value_type = "i32"
+      }
       let temp = gen.next_temp()
-      let code = operand_value.code +
-        "  " +
-        temp +
-        " = sub i32 0, " +
-        operand_value.value +
-        "\n"
-      expr_value(code, temp, "i32")
+      if value_type == "double" {
+        code = code +
+          "  " +
+          temp +
+          " = fsub double 0.000000e+00, " +
+          value +
+          "\n"
+        expr_value(code, temp, "double")
+      } else {
+        code = code + "  " + temp + " = sub i32 0, " + value + "\n"
+        expr_value(code, temp, "i32")
+      }
     }
     TokenKind::Bang => {
       let operand_value = llvm_gen_expr_value(gen, unary_expr.operand)
+      let mut code = operand_value.code
+      let mut value = operand_value.value
+      let mut operand_type = operand_value.llvm_type
+      if operand_type == "" {
+        operand_type = "i32"
+      }
+      if operand_type != "i32" {
+        let (cast_code, cast_temp) = cast_value_to_type(
+          gen, value, operand_type, "i32",
+        )
+        code = code + cast_code
+        value = cast_temp
+      }
       let cmp_temp = gen.next_temp()
       let temp = gen.next_temp()
-      let code = operand_value.code +
+      let code = code +
         "  " +
         cmp_temp +
         " = icmp eq i32 " +
-        operand_value.value +
+        value +
         ", 0\n  " +
         temp +
         " = zext i1 " +
@@ -2590,11 +3661,22 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
   let mut array_element_type = ""
   let mut array_element_closure_arity = -1
   let mut return_tuple_count = -1
+  let mut return_struct_name = ""
+  let mut return_enum_name = ""
   let mut direct_function_entry : ClosureEntry? = None
   let mut is_recursive_call = false
   match call_expr.callee.kind {
     ExprKind::Ident(token) => {
       let name = token.lexeme
+      match gen.get_enum_variant_info(name) {
+        Some(variant_info) =>
+          if variant_info.param_types.length() == call_expr.arguments.length() {
+            return llvm_gen_enum_variant_value(
+              gen, variant_info, args_code, args_temps, args_types,
+            )
+          }
+        None => ()
+      }
       match gen.get_var_entry(name) {
         Some(_) => {
           let callee_value = llvm_gen_ident(gen, token)
@@ -2611,9 +3693,35 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
                   return_type = closure_struct_pointer_type_for_arity(
                     return_closure_arity,
                   )
+                  return_struct_name = ""
+                  return_enum_name = ""
                 } else if entry.function_stmt.return_type_is_tuple {
                   return_type = "i32*"
                   return_tuple_count = entry.function_stmt.return_tuple_element_types.length()
+                  return_struct_name = ""
+                  return_enum_name = ""
+                } else {
+                  match entry.function_stmt.return_type {
+                    Some(ret_token) => {
+                      let (resolved_type, resolved_struct, resolved_enum) = resolve_simple_type_name(
+                        ret_token.lexeme,
+                        gen.struct_defs,
+                        gen.enum_defs,
+                      )
+                      return_type = resolved_type
+                      if resolved_struct != "" {
+                        return_struct_name = resolved_struct
+                        return_enum_name = ""
+                      } else if resolved_enum != "" {
+                        return_enum_name = resolved_enum
+                        return_struct_name = ""
+                      } else {
+                        return_struct_name = ""
+                        return_enum_name = ""
+                      }
+                    }
+                    None => ()
+                  }
                 }
                 func_name = "@" + name
               }
@@ -2639,9 +3747,35 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
                 return_type = closure_struct_pointer_type_for_arity(
                   return_closure_arity,
                 )
+                return_struct_name = ""
+                return_enum_name = ""
               } else if entry.function_stmt.return_type_is_tuple {
                 return_type = "i32*"
                 return_tuple_count = entry.function_stmt.return_tuple_element_types.length()
+                return_struct_name = ""
+                return_enum_name = ""
+              } else {
+                match entry.function_stmt.return_type {
+                  Some(ret_token) => {
+                    let (resolved_type, resolved_struct, resolved_enum) = resolve_simple_type_name(
+                      ret_token.lexeme,
+                      gen.struct_defs,
+                      gen.enum_defs,
+                    )
+                    return_type = resolved_type
+                    if resolved_struct != "" {
+                      return_struct_name = resolved_struct
+                      return_enum_name = ""
+                    } else if resolved_enum != "" {
+                      return_enum_name = resolved_enum
+                      return_struct_name = ""
+                    } else {
+                      return_struct_name = ""
+                      // keep existing enum name if set
+                    }
+                  }
+                  None => ()
+                }
               }
             }
             None => ()
@@ -2740,7 +3874,11 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
       Some(entry) => {
         let params : Array[String] = Array::new()
         for param in entry.function_stmt.parameters {
-          let param_info = function_param_llvm_info(param)
+          let param_info = function_param_llvm_info(
+            param,
+            gen.struct_defs,
+            gen.enum_defs,
+          )
           params.push(param_info.llvm_type)
         }
         param_types_for_call = params
@@ -2878,10 +4016,21 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
         )
       }
       if return_tuple_count >= 0 {
-        expr_value_with_tuple_metadata(base_value, return_tuple_count)
-      } else {
-        base_value
+        base_value = expr_value_with_tuple_metadata(
+          base_value, return_tuple_count,
+        )
       }
+      let mut struct_name = return_struct_name
+      if struct_name == "" {
+        struct_name = gen.struct_name_for_type(return_type)
+      }
+      if struct_name != "" {
+        base_value = expr_value_with_struct_name(base_value, struct_name)
+      }
+      if return_enum_name != "" {
+        base_value = expr_value_with_enum_name(base_value, return_enum_name)
+      }
+      base_value
     }
   }
 }
@@ -2992,7 +4141,7 @@ fn llvm_gen_let(gen : LLVMGen, let_stmt : LetStmt) -> (String, StatementValue) {
         let global_name = LLVMGen::global_var_symbol(token.lexeme)
         if !gen.has_global_var(token.lexeme) {
           gen.global_vars.push(
-            global_var_info(token.lexeme, "i32", -1, "", -1, -1),
+            global_var_info(token.lexeme, "i32", -1, "", -1, -1, "", ""),
           )
         }
         gen.add_var_with_type_and_arity(token.lexeme, global_name, "i32", -1)
@@ -3010,6 +4159,8 @@ fn llvm_gen_let(gen : LLVMGen, let_stmt : LetStmt) -> (String, StatementValue) {
       }
       gen.clear_array_metadata(token.lexeme)
       gen.clear_tuple_metadata(token.lexeme)
+      gen.clear_struct_metadata(token.lexeme)
+      gen.clear_enum_metadata(token.lexeme)
       index = index + 1
     }
     (code, empty_statement_value())
@@ -3028,6 +4179,8 @@ fn llvm_gen_let(gen : LLVMGen, let_stmt : LetStmt) -> (String, StatementValue) {
           value.array_element_type,
           value.array_element_closure_arity,
           value.tuple_element_count,
+          value.struct_name,
+          value.enum_name,
         ),
       )
     }
@@ -3060,6 +4213,16 @@ fn llvm_gen_let(gen : LLVMGen, let_stmt : LetStmt) -> (String, StatementValue) {
       gen.set_tuple_metadata(let_stmt.name.lexeme, value.tuple_element_count)
     } else {
       gen.clear_tuple_metadata(let_stmt.name.lexeme)
+    }
+    if value.struct_name != "" {
+      gen.set_struct_metadata(let_stmt.name.lexeme, value.struct_name)
+    } else {
+      gen.clear_struct_metadata(let_stmt.name.lexeme)
+    }
+    if value.enum_name != "" {
+      gen.set_enum_metadata(let_stmt.name.lexeme, value.enum_name)
+    } else {
+      gen.clear_enum_metadata(let_stmt.name.lexeme)
     }
     (code, empty_statement_value())
   } else {
@@ -3098,6 +4261,16 @@ fn llvm_gen_let(gen : LLVMGen, let_stmt : LetStmt) -> (String, StatementValue) {
       gen.set_tuple_metadata(let_stmt.name.lexeme, value.tuple_element_count)
     } else {
       gen.clear_tuple_metadata(let_stmt.name.lexeme)
+    }
+    if value.struct_name != "" {
+      gen.set_struct_metadata(let_stmt.name.lexeme, value.struct_name)
+    } else {
+      gen.clear_struct_metadata(let_stmt.name.lexeme)
+    }
+    if value.enum_name != "" {
+      gen.set_enum_metadata(let_stmt.name.lexeme, value.enum_name)
+    } else {
+      gen.clear_enum_metadata(let_stmt.name.lexeme)
     }
     // let 语句本身不返回值
     (code, empty_statement_value())
@@ -3150,6 +4323,16 @@ fn llvm_gen_assign(
           } else {
             gen.clear_tuple_metadata(token.lexeme)
           }
+          if value.struct_name != "" {
+            gen.set_struct_metadata(token.lexeme, value.struct_name)
+          } else {
+            gen.clear_struct_metadata(token.lexeme)
+          }
+          if value.enum_name != "" {
+            gen.set_enum_metadata(token.lexeme, value.enum_name)
+          } else {
+            gen.clear_enum_metadata(token.lexeme)
+          }
           // 赋值语句返回赋值后的值
           (code, statement_value_from_expr(value))
         }
@@ -3163,32 +4346,99 @@ fn llvm_gen_assign(
 
       // 生成索引表达式的代码
       let index_value = llvm_gen_expr_value(gen, index_expr.index)
-
-      // 使用 getelementptr 计算元素地址
-      // getelementptr i32, i32* %array, i32 %index
+      let mut element_type = array_value.array_element_type
+      if element_type == "" {
+        if array_value.llvm_type == "double*" {
+          element_type = "double"
+        } else if array_value.llvm_type == "i8**" {
+          element_type = "i8*"
+        } else {
+          element_type = "i32"
+        }
+      }
+      let mut pointer_kind = "i32"
+      if array_value.llvm_type == "double*" || element_type == "double" {
+        pointer_kind = "double"
+      } else if array_value.llvm_type == "i8**" ||
+        element_type.contains("*") ||
+        array_value.array_element_closure_arity >= 0 {
+        pointer_kind = "ptr"
+      }
+      let mut value_code = value.code
+      let mut stored_value = value.value
+      let mut value_type = value.llvm_type
+      if value_type == "" {
+        value_type = "i32"
+      }
+      if pointer_kind == "double" {
+        if value_type != "double" {
+          let (cast_code, cast_temp) = cast_value_to_type(
+            gen, stored_value, value_type, "double",
+          )
+          value_code = value_code + cast_code
+          stored_value = cast_temp
+          value_type = "double"
+        }
+      } else if pointer_kind == "ptr" {
+        if value_type != "i8*" {
+          let cast_temp = gen.next_temp()
+          value_code = value_code +
+            "  " +
+            cast_temp +
+            " = bitcast " +
+            value_type +
+            " " +
+            stored_value +
+            " to i8*\n"
+          stored_value = cast_temp
+          value_type = "i8*"
+        }
+      } else if value_type != "i32" {
+        let (cast_code, cast_temp) = cast_value_to_type(
+          gen, stored_value, value_type, "i32",
+        )
+        value_code = value_code + cast_code
+        stored_value = cast_temp
+        value_type = "i32"
+      }
       let elem_ptr_temp = gen.next_temp()
-      let gep_code = "  " +
+      let gep_code = if pointer_kind == "double" {
+        "  " +
+        elem_ptr_temp +
+        " = getelementptr double, double* " +
+        array_value.value +
+        ", i32 " +
+        index_value.value +
+        "\n"
+      } else if pointer_kind == "ptr" {
+        "  " +
+        elem_ptr_temp +
+        " = getelementptr i8*, i8** " +
+        array_value.value +
+        ", i32 " +
+        index_value.value +
+        "\n"
+      } else {
+        "  " +
         elem_ptr_temp +
         " = getelementptr i32, i32* " +
         array_value.value +
         ", i32 " +
         index_value.value +
         "\n"
-
-      // 使用 store 指令存储值
-      let store_code = "  store i32 " +
-        value.value +
-        ", i32* " +
-        elem_ptr_temp +
-        "\n"
-
-      // 组合所有代码
-      let code = value.code +
+      }
+      let store_code = if pointer_kind == "double" {
+        "  store double " + stored_value + ", double* " + elem_ptr_temp + "\n"
+      } else if pointer_kind == "ptr" {
+        "  store i8* " + stored_value + ", i8** " + elem_ptr_temp + "\n"
+      } else {
+        "  store i32 " + stored_value + ", i32* " + elem_ptr_temp + "\n"
+      }
+      let code = value_code +
         array_value.code +
         index_value.code +
         gep_code +
         store_code
-      // 赋值语句返回赋值后的值
       (code, statement_value_from_expr(value))
     }
     // 其他类型不支持赋值
@@ -3232,16 +4482,30 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, StatementValue) {
   }
   let mut result_type = "i32"
   let mut result_tuple_count = -1
+  let mut result_struct_name = ""
+  let mut result_enum_name = ""
   if statement_value_has_value(then_result) && then_result.llvm_type != "" {
     result_type = then_result.llvm_type
     if then_result.tuple_element_count >= 0 {
       result_tuple_count = then_result.tuple_element_count
+    }
+    if then_result.struct_name != "" {
+      result_struct_name = then_result.struct_name
+    }
+    if then_result.enum_name != "" {
+      result_enum_name = then_result.enum_name
     }
   } else if statement_value_has_value(else_result) &&
     else_result.llvm_type != "" {
     result_type = else_result.llvm_type
     if else_result.tuple_element_count >= 0 {
       result_tuple_count = else_result.tuple_element_count
+    }
+    if else_result.struct_name != "" {
+      result_struct_name = else_result.struct_name
+    }
+    if else_result.enum_name != "" {
+      result_enum_name = else_result.enum_name
     }
   }
   let result_ptr = gen.next_temp()
@@ -3309,7 +4573,9 @@ fn llvm_gen_if(gen : LLVMGen, if_stmt : IfStmt) -> (String, StatementValue) {
     load_code
   (
     code,
-    statement_value_with_tuple(result_temp, result_type, result_tuple_count),
+    statement_value_with_tuple(
+      result_temp, result_type, result_tuple_count, result_struct_name, result_enum_name,
+    ),
   )
 }
 
@@ -3407,7 +4673,8 @@ fn default_return_value(return_type : String) -> String {
 // 模块7: 函数定义生成
 // 支持：参数处理、函数体生成、返回语句
 fn llvm_gen_function(
-  struct_defs_map : Array[(String, Array[String])],
+  struct_defs_map : Array[(String, Array[StructFieldInfo])],
+  enum_infos : Array[EnumInfo],
   function_stmt : FunctionStmt,
   closure_metadata : ClosureMetadata,
   global_vars : Array[GlobalVarInfo],
@@ -3447,7 +4714,9 @@ fn llvm_gen_function(
   let mut param_index = 0
   for param in function_stmt.parameters {
     let param_name = "%" + param_index.to_string()
-    let param_info = function_param_llvm_info(param)
+    let param_info = function_param_llvm_info(
+      param, struct_defs_map, enum_infos,
+    )
     let entry = param_info.llvm_type + " " + param_name
     if first {
       param_list = entry
@@ -3466,6 +4735,18 @@ fn llvm_gen_function(
     return_type = closure_struct_pointer_type_for_arity(return_closure_arity)
   } else if function_stmt.return_type_is_tuple {
     return_type = "i32*"
+  } else if !is_main {
+    match function_stmt.return_type {
+      Some(token) => {
+        let (resolved_type, _, _) = resolve_simple_type_name(
+          token.lexeme,
+          struct_defs_map,
+          enum_infos,
+        )
+        return_type = resolved_type
+      }
+      None => ()
+    }
   }
   let mut output = "define " +
     return_type +
@@ -3481,6 +4762,7 @@ fn llvm_gen_function(
     function_stmt.name.lexeme,
     func_id,
     closure_metadata.clone(),
+    enum_infos,
     return_type,
     global_vars,
     is_nested_function,
@@ -3495,7 +4777,9 @@ fn llvm_gen_function(
   let mut param_index = 0
   for param in function_stmt.parameters {
     let param_arg = "%" + param_index.to_string()
-    let param_info = function_param_llvm_info(param)
+    let param_info = function_param_llvm_info(
+      param, struct_defs_map, enum_infos,
+    )
     // 为参数分配内存
     let param_temp = gen.next_temp()
     gen.add_var_with_type_and_arity(
@@ -3531,6 +4815,16 @@ fn llvm_gen_function(
       gen.set_tuple_metadata(param.name.lexeme, param_info.tuple_element_count)
     } else {
       gen.clear_tuple_metadata(param.name.lexeme)
+    }
+    if param_info.struct_name != "" {
+      gen.set_struct_metadata(param.name.lexeme, param_info.struct_name)
+    } else {
+      gen.clear_struct_metadata(param.name.lexeme)
+    }
+    if param_info.enum_name != "" {
+      gen.set_enum_metadata(param.name.lexeme, param_info.enum_name)
+    } else {
+      gen.clear_enum_metadata(param.name.lexeme)
     }
     param_index = param_index + 1
   }
@@ -3956,30 +5250,839 @@ fn llvm_gen_tuple_literal(gen : LLVMGen, tuple_lit : TupleLiteral) -> ExprValue 
 }
 
 ///|
-// 占位函数：结构体字面量生成
 fn llvm_gen_struct_literal(
   gen : LLVMGen,
   struct_lit : StructLiteral,
 ) -> ExprValue {
-  let temp = gen.next_temp()
-  expr_value("", temp, "i32")
+  let mut code = ""
+  let struct_name = struct_lit.name.lexeme
+  let field_defs = match gen.find_struct_fields(struct_name) {
+    Some(fields) => fields
+    None => Array::new()
+  }
+  let literal_values : Array[ExprValue] = Array::new()
+  let literal_names : Array[String] = Array::new()
+  for field in struct_lit.fields {
+    let value = llvm_gen_expr_value(gen, field.value)
+    code = code + value.code
+    literal_names.push(field.name.lexeme)
+    literal_values.push(value)
+  }
+  let mut total_size = 0
+  let mut size_index = 0
+  while size_index < field_defs.length() {
+    total_size = total_size + llvm_type_size(field_defs[size_index].llvm_type)
+    size_index = size_index + 1
+  }
+  if total_size == 0 {
+    total_size = 4
+  }
+  let raw_ptr = gen.next_temp()
+  code = code +
+    "  " +
+    raw_ptr +
+    " = call i8* @minimbt_malloc(i32 " +
+    total_size.to_string() +
+    ")\n"
+  let struct_ptr = gen.next_temp()
+  let llvm_struct_type = "%" + struct_name
+  code = code +
+    "  " +
+    struct_ptr +
+    " = bitcast i8* " +
+    raw_ptr +
+    " to " +
+    llvm_struct_type +
+    "*\n"
+  let mut field_index = 0
+  while field_index < field_defs.length() {
+    let field_info = field_defs[field_index]
+    let mut stored_value = default_value_for_type(field_info.llvm_type)
+    let mut value_type = field_info.llvm_type
+    let mut literal_index = 0
+    while literal_index < literal_names.length() {
+      if literal_names[literal_index] == field_info.name {
+        let literal_value = literal_values[literal_index]
+        let (cast_code, casted_value) = cast_value_to_type(
+          gen,
+          literal_value.value,
+          literal_value.llvm_type,
+          field_info.llvm_type,
+        )
+        code = code + cast_code
+        stored_value = casted_value
+        value_type = field_info.llvm_type
+        break
+      }
+      literal_index = literal_index + 1
+    }
+    let field_ptr = gen.next_temp()
+    code = code +
+      "  " +
+      field_ptr +
+      " = getelementptr " +
+      llvm_struct_type +
+      ", " +
+      llvm_struct_type +
+      "* " +
+      struct_ptr +
+      ", i32 0, i32 " +
+      field_index.to_string() +
+      "\n"
+    code = code +
+      "  store " +
+      value_type +
+      " " +
+      stored_value +
+      ", " +
+      value_type +
+      "* " +
+      field_ptr +
+      "\n"
+    field_index = field_index + 1
+  }
+  let base_value = expr_value(code, struct_ptr, llvm_struct_type + "*")
+  expr_value_with_struct_name(base_value, struct_name)
 }
 
 ///|
-// 占位函数：字段访问生成
 fn llvm_gen_field_access(
   gen : LLVMGen,
   field_access : FieldAccessExpr,
 ) -> ExprValue {
-  let temp = gen.next_temp()
-  expr_value("", temp, "i32")
+  let object_value = llvm_gen_expr_value(gen, field_access.object)
+  let mut code = object_value.code
+  let mut struct_name = object_value.struct_name
+  if struct_name == "" {
+    struct_name = gen.struct_name_for_type(object_value.llvm_type)
+  }
+  match gen.find_struct_fields(struct_name) {
+    Some(fields) => {
+      let mut field_index = -1
+      let mut field_type = "i32"
+      let mut idx = 0
+      while idx < fields.length() {
+        if fields[idx].name == field_access.field.lexeme {
+          field_index = idx
+          field_type = fields[idx].llvm_type
+          break
+        }
+        idx = idx + 1
+      }
+      if field_index == -1 {
+        return expr_value(code, object_value.value, object_value.llvm_type)
+      }
+      let expected_type = "%" + struct_name + "*"
+      let mut object_ptr = object_value.value
+      if object_value.llvm_type != expected_type {
+        let cast_temp = gen.next_temp()
+        code = code +
+          "  " +
+          cast_temp +
+          " = bitcast " +
+          object_value.llvm_type +
+          " " +
+          object_value.value +
+          " to " +
+          expected_type +
+          "\n"
+        object_ptr = cast_temp
+      }
+      let field_ptr = gen.next_temp()
+      code = code +
+        "  " +
+        field_ptr +
+        " = getelementptr %" +
+        struct_name +
+        ", %" +
+        struct_name +
+        "* " +
+        object_ptr +
+        ", i32 0, i32 " +
+        field_index.to_string() +
+        "\n"
+      let result_temp = gen.next_temp()
+      code = code +
+        "  " +
+        result_temp +
+        " = load " +
+        field_type +
+        ", " +
+        field_type +
+        "* " +
+        field_ptr +
+        "\n"
+      expr_value(code, result_temp, field_type)
+    }
+    None => object_value
+  }
 }
 
 ///|
-// 占位函数：match 表达式生成
+fn enum_name_from_llvm_type(
+  enum_defs : Array[EnumInfo],
+  llvm_type : String,
+) -> String {
+  for info in enum_defs {
+    if info.pointer_type == llvm_type ||
+      info.struct_type == llvm_type ||
+      info.struct_type + "*" == llvm_type {
+      return info.name
+    }
+  }
+  ""
+}
+
+///|
+fn resolve_expr_llvm_type(
+  gen : LLVMGen,
+  expr : Expr,
+  value : ExprValue,
+) -> String {
+  if value.llvm_type != "" {
+    return value.llvm_type
+  }
+  match expr.kind {
+    ExprKind::Ident(token) => {
+      match gen.get_var_entry(token.lexeme) {
+        Some((_, llvm_type, _)) => return llvm_type
+        None => ()
+      }
+      match gen.get_global_var(token.lexeme) {
+        Some(info) => return info.llvm_type
+        None => ()
+      }
+    }
+    _ => ()
+  }
+  ""
+}
+
+///|
+fn determine_enum_name_for_match(
+  gen : LLVMGen,
+  expr : Expr,
+  value : ExprValue,
+) -> String {
+  if value.enum_name != "" {
+    return value.enum_name
+  }
+  match expr.kind {
+    ExprKind::Ident(token) => {
+      let metadata = gen.get_enum_metadata(token.lexeme)
+      if metadata != "" {
+        return metadata
+      }
+      match gen.get_global_var(token.lexeme) {
+        Some(info) => if info.enum_name != "" { return info.enum_name }
+        None => ()
+      }
+      match gen.get_var_entry(token.lexeme) {
+        Some((_, llvm_type, _)) =>
+          return enum_name_from_llvm_type(gen.enum_defs, llvm_type)
+        None => ()
+      }
+      match gen.get_global_var(token.lexeme) {
+        Some(info) =>
+          return enum_name_from_llvm_type(gen.enum_defs, info.llvm_type)
+        None => ()
+      }
+    }
+    _ => ()
+  }
+  enum_name_from_llvm_type(gen.enum_defs, value.llvm_type)
+}
+
+///|
+fn enum_name_from_match_arms(gen : LLVMGen, arms : Array[MatchArm]) -> String {
+  for arm in arms {
+    match arm.pattern.kind {
+      PatternKind::EnumVariant(enum_pattern) =>
+        match gen.get_enum_variant_info(enum_pattern.name.lexeme) {
+          Some(variant_info) => return variant_info.enum_name
+          None => ()
+        }
+      _ => ()
+    }
+  }
+  ""
+}
+
+///|
+fn cleanup_pattern_bindings(gen : LLVMGen, names : Array[String]) -> Unit {
+  for name in names {
+    if name == "" {
+      continue
+    }
+    gen.remove_var_entry(name)
+    gen.clear_array_metadata(name)
+    gen.clear_tuple_metadata(name)
+    gen.clear_struct_metadata(name)
+    gen.clear_enum_metadata(name)
+  }
+}
+
+///|
+fn update_metadata_for_llvm_type(
+  gen : LLVMGen,
+  name : String,
+  llvm_type : String,
+) -> Unit {
+  gen.clear_array_metadata(name)
+  gen.clear_tuple_metadata(name)
+  gen.clear_struct_metadata(name)
+  gen.clear_enum_metadata(name)
+  let struct_name = gen.struct_name_for_type(llvm_type)
+  if struct_name != "" {
+    gen.set_struct_metadata(name, struct_name)
+  }
+  let enum_name = enum_name_from_llvm_type(gen.enum_defs, llvm_type)
+  if enum_name != "" {
+    gen.set_enum_metadata(name, enum_name)
+  }
+}
+
+///|
+fn llvm_gen_bind_enum_variant_arguments(
+  gen : LLVMGen,
+  enum_pattern : PatternEnumVariant,
+  variant_info : EnumVariantInfo,
+  payload_value : String,
+) -> String {
+  if variant_info.param_types.length() == 0 ||
+    variant_info.payload_struct_name == "" {
+    return ""
+  }
+  let mut code = ""
+  let payload_struct_ptr_type = variant_info.payload_struct_name + "*"
+  let payload_struct_ptr = gen.next_temp()
+  code = code +
+    "  " +
+    payload_struct_ptr +
+    " = bitcast i8* " +
+    payload_value +
+    " to " +
+    payload_struct_ptr_type +
+    "\n"
+  let mut index = 0
+  while index < enum_pattern.arguments.length() &&
+        index < variant_info.param_types.length() {
+    match enum_pattern.arguments[index].kind {
+      PatternKind::Ident(token) => {
+        let field_type = variant_info.param_types[index]
+        let field_ptr = gen.next_temp()
+        code = code +
+          "  " +
+          field_ptr +
+          " = getelementptr " +
+          variant_info.payload_struct_name +
+          ", " +
+          payload_struct_ptr_type +
+          " " +
+          payload_struct_ptr +
+          ", i32 0, i32 " +
+          index.to_string() +
+          "\n"
+        let field_value = gen.next_temp()
+        code = code +
+          "  " +
+          field_value +
+          " = load " +
+          field_type +
+          ", " +
+          field_type +
+          "* " +
+          field_ptr +
+          "\n"
+        let binding_alloca = gen.next_temp()
+        gen.add_var_with_type_and_arity(
+          token.lexeme,
+          binding_alloca,
+          field_type,
+          -1,
+        )
+        code = code + "  " + binding_alloca + " = alloca " + field_type + "\n"
+        code = code +
+          "  store " +
+          field_type +
+          " " +
+          field_value +
+          ", " +
+          field_type +
+          "* " +
+          binding_alloca +
+          "\n"
+        update_metadata_for_llvm_type(gen, token.lexeme, field_type)
+      }
+      PatternKind::Wildcard(_) => ()
+      _ => ()
+    }
+    index = index + 1
+  }
+  code
+}
+
+///|
+fn llvm_gen_bind_full_enum_value(
+  gen : LLVMGen,
+  name : String,
+  enum_ptr : String,
+  enum_ptr_type : String,
+  enum_name : String,
+) -> String {
+  let binding_alloca = gen.next_temp()
+  gen.add_var_with_type_and_arity(name, binding_alloca, enum_ptr_type, -1)
+  let mut code = "  " + binding_alloca + " = alloca " + enum_ptr_type + "\n"
+  code = code +
+    "  store " +
+    enum_ptr_type +
+    " " +
+    enum_ptr +
+    ", " +
+    enum_ptr_type +
+    "* " +
+    binding_alloca +
+    "\n"
+  gen.clear_array_metadata(name)
+  gen.clear_tuple_metadata(name)
+  gen.clear_struct_metadata(name)
+  gen.set_enum_metadata(name, enum_name)
+  code
+}
+
+///|
 fn llvm_gen_match(gen : LLVMGen, match_expr : MatchExpr) -> ExprValue {
-  let temp = gen.next_temp()
-  expr_value("", temp, "i32")
+  let scrutinee_value = llvm_gen_expr_value(gen, match_expr.value)
+  let mut enum_name = determine_enum_name_for_match(
+    gen,
+    match_expr.value,
+    scrutinee_value,
+  )
+  if enum_name == "" {
+    enum_name = enum_name_from_match_arms(gen, match_expr.arms)
+  }
+  match gen.get_enum_info(enum_name) {
+    Some(enum_info) => {
+      let mut code = scrutinee_value.code
+      let mut scrutinee_type = resolve_expr_llvm_type(
+        gen,
+        match_expr.value,
+        scrutinee_value,
+      )
+      if scrutinee_type == "" {
+        scrutinee_type = enum_info.pointer_type
+      }
+      let mut enum_ptr = scrutinee_value.value
+      if enum_ptr == "" {
+        enum_ptr = "null"
+      }
+      if scrutinee_type != enum_info.pointer_type {
+        let cast_temp = gen.next_temp()
+        code = code +
+          "  " +
+          cast_temp +
+          " = bitcast " +
+          scrutinee_type +
+          " " +
+          enum_ptr +
+          " to " +
+          enum_info.pointer_type +
+          "\n"
+        enum_ptr = cast_temp
+      }
+      let tag_ptr = gen.next_temp()
+      code = code +
+        "  " +
+        tag_ptr +
+        " = getelementptr " +
+        enum_info.struct_type +
+        ", " +
+        enum_info.pointer_type +
+        " " +
+        enum_ptr +
+        ", i32 0, i32 0\n"
+      let tag_value = gen.next_temp()
+      code = code + "  " + tag_value + " = load i32, i32* " + tag_ptr + "\n"
+      let payload_ptr = gen.next_temp()
+      code = code +
+        "  " +
+        payload_ptr +
+        " = getelementptr " +
+        enum_info.struct_type +
+        ", " +
+        enum_info.pointer_type +
+        " " +
+        enum_ptr +
+        ", i32 0, i32 1\n"
+      let payload_value = gen.next_temp()
+      code = code +
+        "  " +
+        payload_value +
+        " = load i8*, i8** " +
+        payload_ptr +
+        "\n"
+      let merge_label = gen.next_label()
+      let default_fallback_label = gen.next_label()
+      let result_ptr = gen.next_temp()
+      let mut result_alloc_code = ""
+      let mut result_type = ""
+      let mut result_tuple_count = -1
+      let mut result_struct_name = ""
+      let mut result_enum_name = ""
+      let mut result_array_element_type = ""
+      let mut result_array_element_closure_arity = -1
+      let mut result_closure_arity = -1
+      let mut switch_entries = ""
+      let mut branch_blocks = ""
+      let mut default_label = ""
+      let mut default_block_code = ""
+      for arm in match_expr.arms {
+        match arm.pattern.kind {
+          PatternKind::EnumVariant(enum_pattern) =>
+            match gen.get_enum_variant_info(enum_pattern.name.lexeme) {
+              Some(variant_info) =>
+                if variant_info.enum_name == enum_info.name {
+                  let arm_label = gen.next_label()
+                  switch_entries = switch_entries +
+                    "    i32 " +
+                    variant_info.tag.to_string() +
+                    ", label %" +
+                    arm_label +
+                    "\n"
+                  let bindings : Array[String] = Array::new()
+                  collect_pattern_bindings(arm.pattern, bindings)
+                  let mut arm_code = llvm_gen_bind_enum_variant_arguments(
+                    gen, enum_pattern, variant_info, payload_value,
+                  )
+                  let arm_value = llvm_gen_expr_value(gen, arm.value)
+                  arm_code = arm_code + arm_value.code
+                  let mut branch_value = arm_value.value
+                  let mut branch_type = arm_value.llvm_type
+                  if branch_type == "" {
+                    branch_type = "i32"
+                  }
+                  if result_type == "" {
+                    result_type = branch_type
+                    result_tuple_count = arm_value.tuple_element_count
+                    result_struct_name = arm_value.struct_name
+                    result_enum_name = arm_value.enum_name
+                    result_array_element_type = arm_value.array_element_type
+                    result_array_element_closure_arity = arm_value.array_element_closure_arity
+                    result_closure_arity = arm_value.closure_arity
+                    result_alloc_code = "  " +
+                      result_ptr +
+                      " = alloca " +
+                      result_type +
+                      "\n"
+                  } else if branch_type != result_type {
+                    let (cast_code, cast_temp) = cast_value_to_type(
+                      gen, branch_value, branch_type, result_type,
+                    )
+                    arm_code = arm_code + cast_code
+                    branch_value = cast_temp
+                    branch_type = result_type
+                  }
+                  if branch_value == "" {
+                    branch_value = default_value_for_type(result_type)
+                  }
+                  arm_code = arm_code +
+                    "  store " +
+                    result_type +
+                    " " +
+                    branch_value +
+                    ", " +
+                    result_type +
+                    "* " +
+                    result_ptr +
+                    "\n" +
+                    "  br label %" +
+                    merge_label +
+                    "\n"
+                  cleanup_pattern_bindings(gen, bindings)
+                  branch_blocks = branch_blocks + arm_label + ":\n" + arm_code
+                }
+              None => ()
+            }
+          PatternKind::Wildcard(_) =>
+            if default_label == "" {
+              default_label = gen.next_label()
+              let mut arm_code = ""
+              let arm_value = llvm_gen_expr_value(gen, arm.value)
+              arm_code = arm_code + arm_value.code
+              let mut branch_value = arm_value.value
+              let mut branch_type = arm_value.llvm_type
+              if branch_type == "" {
+                branch_type = "i32"
+              }
+              if result_type == "" {
+                result_type = branch_type
+                result_tuple_count = arm_value.tuple_element_count
+                result_struct_name = arm_value.struct_name
+                result_enum_name = arm_value.enum_name
+                result_array_element_type = arm_value.array_element_type
+                result_array_element_closure_arity = arm_value.array_element_closure_arity
+                result_closure_arity = arm_value.closure_arity
+                result_alloc_code = "  " +
+                  result_ptr +
+                  " = alloca " +
+                  result_type +
+                  "\n"
+              } else if branch_type != result_type {
+                let (cast_code, cast_temp) = cast_value_to_type(
+                  gen, branch_value, branch_type, result_type,
+                )
+                arm_code = arm_code + cast_code
+                branch_value = cast_temp
+              }
+              if branch_value == "" {
+                branch_value = default_value_for_type(result_type)
+              }
+              arm_code = arm_code +
+                "  store " +
+                result_type +
+                " " +
+                branch_value +
+                ", " +
+                result_type +
+                "* " +
+                result_ptr +
+                "\n" +
+                "  br label %" +
+                merge_label +
+                "\n"
+              branch_blocks = branch_blocks + default_label + ":\n" + arm_code
+            }
+          PatternKind::Ident(token) => {
+            let mut handled_variant_ident = false
+            match gen.get_enum_variant_info(token.lexeme) {
+              Some(variant_info) =>
+                if variant_info.enum_name == enum_info.name &&
+                  variant_info.param_types.length() == 0 {
+                  let empty_tokens : Array[Token] = Array::new()
+                  let empty_args : Array[Pattern] = Array::new()
+                  let synthetic_pattern : PatternEnumVariant = {
+                    qualifier: empty_tokens,
+                    name: token,
+                    open: None,
+                    arguments: empty_args,
+                    close: None,
+                    range: arm.pattern.range,
+                  }
+                  let bindings : Array[String] = Array::new()
+                  let mut arm_code = llvm_gen_bind_enum_variant_arguments(
+                    gen, synthetic_pattern, variant_info, payload_value,
+                  )
+                  let arm_value = llvm_gen_expr_value(gen, arm.value)
+                  arm_code = arm_code + arm_value.code
+                  let mut branch_value = arm_value.value
+                  let mut branch_type = arm_value.llvm_type
+                  if branch_type == "" {
+                    branch_type = "i32"
+                  }
+                  if result_type == "" {
+                    result_type = branch_type
+                    result_tuple_count = arm_value.tuple_element_count
+                    result_struct_name = arm_value.struct_name
+                    result_enum_name = arm_value.enum_name
+                    result_array_element_type = arm_value.array_element_type
+                    result_array_element_closure_arity = arm_value.array_element_closure_arity
+                    result_closure_arity = arm_value.closure_arity
+                    result_alloc_code = "  " +
+                      result_ptr +
+                      " = alloca " +
+                      result_type +
+                      "\n"
+                  } else if branch_type != result_type {
+                    let (cast_code, cast_temp) = cast_value_to_type(
+                      gen, branch_value, branch_type, result_type,
+                    )
+                    arm_code = arm_code + cast_code
+                    branch_value = cast_temp
+                  }
+                  if branch_value == "" {
+                    branch_value = default_value_for_type(result_type)
+                  }
+                  arm_code = arm_code +
+                    "  store " +
+                    result_type +
+                    " " +
+                    branch_value +
+                    ", " +
+                    result_type +
+                    "* " +
+                    result_ptr +
+                    "\n" +
+                    "  br label %" +
+                    merge_label +
+                    "\n"
+                  cleanup_pattern_bindings(gen, bindings)
+                  let arm_label = gen.next_label()
+                  switch_entries = switch_entries +
+                    "    i32 " +
+                    variant_info.tag.to_string() +
+                    ", label %" +
+                    arm_label +
+                    "\n"
+                  branch_blocks = branch_blocks + arm_label + ":\n" + arm_code
+                  handled_variant_ident = true
+                }
+              None => ()
+            }
+            if handled_variant_ident {
+              continue
+            }
+            if default_label == "" {
+              default_label = gen.next_label()
+              let bindings : Array[String] = Array::new()
+              collect_pattern_bindings(arm.pattern, bindings)
+              let mut arm_code = llvm_gen_bind_full_enum_value(
+                gen,
+                token.lexeme,
+                enum_ptr,
+                enum_info.pointer_type,
+                enum_info.name,
+              )
+              let arm_value = llvm_gen_expr_value(gen, arm.value)
+              arm_code = arm_code + arm_value.code
+              let mut branch_value = arm_value.value
+              let mut branch_type = arm_value.llvm_type
+              if branch_type == "" {
+                branch_type = "i32"
+              }
+              if result_type == "" {
+                result_type = branch_type
+                result_tuple_count = arm_value.tuple_element_count
+                result_struct_name = arm_value.struct_name
+                result_enum_name = arm_value.enum_name
+                result_array_element_type = arm_value.array_element_type
+                result_array_element_closure_arity = arm_value.array_element_closure_arity
+                result_closure_arity = arm_value.closure_arity
+                result_alloc_code = "  " +
+                  result_ptr +
+                  " = alloca " +
+                  result_type +
+                  "\n"
+              } else if branch_type != result_type {
+                let (cast_code, cast_temp) = cast_value_to_type(
+                  gen, branch_value, branch_type, result_type,
+                )
+                arm_code = arm_code + cast_code
+                branch_value = cast_temp
+              }
+              if branch_value == "" {
+                branch_value = default_value_for_type(result_type)
+              }
+              arm_code = arm_code +
+                "  store " +
+                result_type +
+                " " +
+                branch_value +
+                ", " +
+                result_type +
+                "* " +
+                result_ptr +
+                "\n" +
+                "  br label %" +
+                merge_label +
+                "\n"
+              cleanup_pattern_bindings(gen, bindings)
+              branch_blocks = branch_blocks + default_label + ":\n" + arm_code
+            }
+          }
+          _ => ()
+        }
+      }
+      if result_type == "" {
+        result_type = "i32"
+        result_alloc_code = "  " + result_ptr + " = alloca i32\n"
+      }
+      if default_label == "" {
+        default_label = default_fallback_label
+        let default_value = default_value_for_type(result_type)
+        default_block_code = default_label +
+          ":\n" +
+          "  store " +
+          result_type +
+          " " +
+          default_value +
+          ", " +
+          result_type +
+          "* " +
+          result_ptr +
+          "\n  br label %" +
+          merge_label +
+          "\n"
+      }
+      let switch_code = "  switch i32 " +
+        tag_value +
+        ", label %" +
+        default_label +
+        " [\n" +
+        switch_entries +
+        "  ]\n"
+      let result_temp = gen.next_temp()
+      let load_code = "  " +
+        result_temp +
+        " = load " +
+        result_type +
+        ", " +
+        result_type +
+        "* " +
+        result_ptr +
+        "\n"
+      let total_code = code +
+        result_alloc_code +
+        switch_code +
+        branch_blocks +
+        default_block_code +
+        merge_label +
+        ":\n" +
+        load_code
+      if result_closure_arity >= 0 {
+        let mut base_value = expr_value_with_closure(
+          total_code, result_temp, result_type, result_closure_arity,
+        )
+        if result_array_element_type != "" {
+          base_value = expr_value_with_array_metadata(
+            base_value, result_array_element_type, result_array_element_closure_arity,
+          )
+        }
+        if result_tuple_count >= 0 {
+          base_value = expr_value_with_tuple_metadata(
+            base_value, result_tuple_count,
+          )
+        }
+        if result_struct_name != "" {
+          base_value = expr_value_with_struct_name(
+            base_value, result_struct_name,
+          )
+        }
+        if result_enum_name != "" {
+          base_value = expr_value_with_enum_name(base_value, result_enum_name)
+        }
+        return base_value
+      }
+      let mut base_value = expr_value(total_code, result_temp, result_type)
+      if result_array_element_type != "" {
+        base_value = expr_value_with_array_metadata(
+          base_value, result_array_element_type, result_array_element_closure_arity,
+        )
+      }
+      if result_tuple_count >= 0 {
+        base_value = expr_value_with_tuple_metadata(
+          base_value, result_tuple_count,
+        )
+      }
+      if result_struct_name != "" {
+        base_value = expr_value_with_struct_name(base_value, result_struct_name)
+      }
+      if result_enum_name != "" {
+        base_value = expr_value_with_enum_name(base_value, result_enum_name)
+      }
+      base_value
+    }
+    None => scrutinee_value
+  }
 }
 
 ///|
