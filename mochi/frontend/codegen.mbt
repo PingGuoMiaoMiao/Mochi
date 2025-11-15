@@ -51,6 +51,15 @@ priv struct ExprValue {
 }
 
 ///|
+priv struct ParamLLVMInfo {
+  llvm_type : String
+  closure_arity : Int
+  array_element_type : String
+  array_element_closure_arity : Int
+  tuple_element_count : Int
+}
+
+///|
 fn expr_value(code : String, value : String, llvm_type : String) -> ExprValue {
   {
     code,
@@ -532,10 +541,7 @@ fn LLVMGen::record_captured_var_type(
     if self.captured_var_registry[index].0 == func_id &&
       self.captured_var_registry[index].1 == name {
       self.captured_var_registry[index] = (
-        func_id,
-        name,
-        llvm_type,
-        closure_arity,
+        func_id, name, llvm_type, closure_arity,
       )
       return
     }
@@ -973,18 +979,88 @@ fn closure_struct_pointer_type_for_arity(param_count : Int) -> String {
 }
 
 ///|
-fn function_param_llvm_type(param : FunctionParam) -> (String, Int) {
+fn default_param_info() -> ParamLLVMInfo {
+  {
+    llvm_type: "i32",
+    closure_arity: -1,
+    array_element_type: "",
+    array_element_closure_arity: -1,
+    tuple_element_count: -1,
+  }
+}
+
+///|
+fn function_param_llvm_info(param : FunctionParam) -> ParamLLVMInfo {
   if param.is_function_type {
     let arity = param.function_param_types.length()
-    (
-      closure_struct_pointer_type_for_arity(arity),
-      arity,
-    )
-  } else if param.is_tuple_type {
-    ("i32*", -1)
-  } else {
-    ("i32", -1)
+    return {
+      llvm_type: closure_struct_pointer_type_for_arity(arity),
+      closure_arity: arity,
+      array_element_type: "",
+      array_element_closure_arity: -1,
+      tuple_element_count: -1,
+    }
   }
+  if param.is_tuple_type {
+    return {
+      llvm_type: "i32*",
+      closure_arity: -1,
+      array_element_type: "",
+      array_element_closure_arity: -1,
+      tuple_element_count: param.tuple_element_types.length(),
+    }
+  }
+  match param.type_name {
+    Some(type_token) => {
+      if type_token.lexeme == "Double" {
+        return {
+          llvm_type: "double",
+          closure_arity: -1,
+          array_element_type: "",
+          array_element_closure_arity: -1,
+          tuple_element_count: -1,
+        }
+      }
+      if type_token.lexeme == "Array" {
+        let mut pointer_type = "i32*"
+        let mut element_type = "i32"
+        let mut element_closure_arity = -1
+        match param.element_type_name {
+          Some(element_token) =>
+            if element_token.lexeme == "Double" {
+              pointer_type = "double*"
+              element_type = "double"
+            } else if element_token.lexeme == "Bool" {
+              pointer_type = "i8**"
+              element_type = closure_struct_pointer_type_for_arity(1)
+              element_closure_arity = 1
+            } else if element_token.lexeme == "Int" {
+              pointer_type = "i32*"
+              element_type = "i32"
+            } else {
+              pointer_type = "i8**"
+              element_type = "i8*"
+            }
+          None => ()
+        }
+        return {
+          llvm_type: pointer_type,
+          closure_arity: -1,
+          array_element_type: element_type,
+          array_element_closure_arity: element_closure_arity,
+          tuple_element_count: -1,
+        }
+      }
+      if type_token.lexeme == "Bool" {
+        return default_param_info()
+      }
+      if type_token.lexeme == "Int" {
+        return default_param_info()
+      }
+    }
+    None => ()
+  }
+  default_param_info()
 }
 
 ///|
@@ -1721,11 +1797,7 @@ fn generate_llvm(statements : Array[Stmt]) -> String {
       has_main_function = true
     }
     let func_code = llvm_gen_function(
-      struct_defs_map,
-      function_stmt,
-      closure_metadata,
-      global_vars,
-      captured_var_registry,
+      struct_defs_map, function_stmt, closure_metadata, global_vars, captured_var_registry,
     )
     output = output + func_code
   }
@@ -1743,22 +1815,14 @@ fn generate_llvm(statements : Array[Stmt]) -> String {
   if main_statements.length() > 0 {
     if has_main_function {
       let init_code = llvm_gen_top_level_function(
-        "@minimbt_init_globals",
-        struct_defs_map,
-        main_statements,
-        closure_metadata,
-        global_vars,
-        captured_var_registry,
+        "@minimbt_init_globals", struct_defs_map, main_statements, closure_metadata,
+        global_vars, captured_var_registry,
       )
       output = output + init_code
       initializer_emitted = true
     } else {
       let main_code = llvm_gen_top_level_function(
-        "@minimbt_main",
-        struct_defs_map,
-        main_statements,
-        closure_metadata,
-        global_vars,
+        "@minimbt_main", struct_defs_map, main_statements, closure_metadata, global_vars,
         captured_var_registry,
       )
       output = output + main_code
@@ -2160,7 +2224,7 @@ fn llvm_gen_create_closure(gen : LLVMGen, entry : ClosureEntry) -> ExprValue {
             field_ptr +
             "\n"
         }
-        None => {
+        None =>
           match gen.get_global_var(var_name) {
             Some(global_info) => {
               let global_symbol = LLVMGen::global_var_symbol(global_info.name)
@@ -2208,7 +2272,6 @@ fn llvm_gen_create_closure(gen : LLVMGen, entry : ClosureEntry) -> ExprValue {
             }
             None => ()
           }
-        }
       }
       if recorded_type != "" {
         gen.record_captured_var_type(
@@ -2550,8 +2613,7 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
                   )
                 } else if entry.function_stmt.return_type_is_tuple {
                   return_type = "i32*"
-                  return_tuple_count =
-                    entry.function_stmt.return_tuple_element_types.length()
+                  return_tuple_count = entry.function_stmt.return_tuple_element_types.length()
                 }
                 func_name = "@" + name
               }
@@ -2678,11 +2740,8 @@ fn llvm_gen_call(gen : LLVMGen, call_expr : CallExpr) -> ExprValue {
       Some(entry) => {
         let params : Array[String] = Array::new()
         for param in entry.function_stmt.parameters {
-          if param.is_tuple_type {
-            params.push("i32*")
-          } else {
-            params.push("i32")
-          }
+          let param_info = function_param_llvm_info(param)
+          params.push(param_info.llvm_type)
         }
         param_types_for_call = params
       }
@@ -3388,8 +3447,8 @@ fn llvm_gen_function(
   let mut param_index = 0
   for param in function_stmt.parameters {
     let param_name = "%" + param_index.to_string()
-    let (param_type, _) = function_param_llvm_type(param)
-    let entry = param_type + " " + param_name
+    let param_info = function_param_llvm_info(param)
+    let entry = param_info.llvm_type + " " + param_name
     if first {
       param_list = entry
       first = false
@@ -3436,31 +3495,40 @@ fn llvm_gen_function(
   let mut param_index = 0
   for param in function_stmt.parameters {
     let param_arg = "%" + param_index.to_string()
-    let (param_type, param_closure_arity) = function_param_llvm_type(param)
+    let param_info = function_param_llvm_info(param)
     // 为参数分配内存
     let param_temp = gen.next_temp()
     gen.add_var_with_type_and_arity(
       param.name.lexeme,
       param_temp,
-      param_type,
-      param_closure_arity,
+      param_info.llvm_type,
+      param_info.closure_arity,
     )
-    output = output + "  " + param_temp + " = alloca " + param_type + "\n"
+    output = output +
+      "  " +
+      param_temp +
+      " = alloca " +
+      param_info.llvm_type +
+      "\n"
     output = output +
       "  store " +
-      param_type +
+      param_info.llvm_type +
       " " +
       param_arg +
       ", " +
-      param_type +
+      param_info.llvm_type +
       "* " +
       param_temp +
       "\n"
-    if param.is_tuple_type {
-      gen.set_tuple_metadata(
+    if param_info.array_element_type != "" {
+      gen.set_array_metadata(
         param.name.lexeme,
-        param.tuple_element_types.length(),
+        param_info.array_element_type,
+        param_info.array_element_closure_arity,
       )
+    }
+    if param_info.tuple_element_count >= 0 {
+      gen.set_tuple_metadata(param.name.lexeme, param_info.tuple_element_count)
     } else {
       gen.clear_tuple_metadata(param.name.lexeme)
     }
@@ -3498,21 +3566,17 @@ fn llvm_gen_function(
         " = load i64, i64* " +
         field_ptr +
         "\n"
-      let (captured_type, captured_closure_arity) = match gen.get_captured_var_type(
-        func_id, var_name,
-      ) {
+      let (captured_type, captured_closure_arity) = match
+        gen.get_captured_var_type(func_id, var_name) {
         Some(info) => info
         None => ("i32", -1)
       }
       let final_type = if captured_type == "" { "i32" } else { captured_type }
       let capture_alloca = gen.next_temp()
-      gen.add_var_with_type_and_arity(var_name, capture_alloca, final_type, captured_closure_arity)
-      output = output +
-        "  " +
-        capture_alloca +
-        " = alloca " +
-        final_type +
-        "\n"
+      gen.add_var_with_type_and_arity(
+        var_name, capture_alloca, final_type, captured_closure_arity,
+      )
+      output = output + "  " + capture_alloca + " = alloca " + final_type + "\n"
       let mut stored_val = field_val
       if final_type == "i32" {
         let trunc_temp = gen.next_temp()
@@ -3595,10 +3659,131 @@ fn llvm_gen_function(
 }
 
 ///|
-// 占位函数：数组字面量生成
+// 数组字面量生成
 fn llvm_gen_array_literal(gen : LLVMGen, array_lit : ArrayLiteral) -> ExprValue {
-  let temp = gen.next_temp()
-  expr_value("", temp, "i32")
+  let mut code = ""
+  let element_values : Array[ExprValue] = Array::new()
+  for element in array_lit.elements {
+    let value = llvm_gen_expr_value(gen, element)
+    code = code + value.code
+    element_values.push(value)
+  }
+  let length = array_lit.elements.length()
+  let length_temp = gen.next_temp()
+  code = code +
+    "  " +
+    length_temp +
+    " = add i32 0, " +
+    length.to_string() +
+    "\n"
+  let mut element_type = "i32"
+  let mut element_closure_arity = -1
+  let mut pointer_kind = "i32"
+  let mut array_pointer_type = "i32*"
+  let mut runtime_func = "@minimbt_create_array"
+  let mut default_arg_type = "i32"
+  let mut default_arg_value = "0"
+  if length > 0 {
+    let first = element_values[0]
+    element_type = first.llvm_type
+    element_closure_arity = first.closure_arity
+    if element_type == "double" {
+      pointer_kind = "double"
+      array_pointer_type = "double*"
+      runtime_func = "@minimbt_create_float_array"
+      default_arg_type = "double"
+      default_arg_value = "0.0"
+    } else if element_type.contains("*") || first.closure_arity >= 0 {
+      pointer_kind = "ptr"
+      array_pointer_type = "i8**"
+      runtime_func = "@minimbt_create_ptr_array"
+      default_arg_type = "i8*"
+      default_arg_value = "null"
+    } else {
+      element_type = "i32"
+    }
+  }
+  let array_temp = gen.next_temp()
+  code = code +
+    "  " +
+    array_temp +
+    " = call " +
+    array_pointer_type +
+    " " +
+    runtime_func +
+    "(i32 " +
+    length_temp +
+    ", " +
+    default_arg_type +
+    " " +
+    default_arg_value +
+    ")\n"
+  let mut index = 0
+  for value in element_values {
+    let elem_ptr = gen.next_temp()
+    let gep_type = if pointer_kind == "double" {
+      "double"
+    } else if pointer_kind == "ptr" {
+      "i8*"
+    } else {
+      "i32"
+    }
+    code = code +
+      "  " +
+      elem_ptr +
+      " = getelementptr " +
+      gep_type +
+      ", " +
+      array_pointer_type +
+      " " +
+      array_temp +
+      ", i32 " +
+      index.to_string() +
+      "\n"
+    let mut stored_value = value.value
+    if pointer_kind == "ptr" {
+      if value.llvm_type != "i8*" {
+        let bitcast_temp = gen.next_temp()
+        code = code +
+          "  " +
+          bitcast_temp +
+          " = bitcast " +
+          value.llvm_type +
+          " " +
+          value.value +
+          " to i8*\n"
+        stored_value = bitcast_temp
+      }
+      code = code + "  store i8* " + stored_value + ", i8** " + elem_ptr + "\n"
+    } else if pointer_kind == "double" {
+      let mut final_value = stored_value
+      if value.llvm_type != "double" {
+        let cast_temp = gen.next_temp()
+        code = code +
+          "  " +
+          cast_temp +
+          " = sitofp " +
+          value.llvm_type +
+          " " +
+          stored_value +
+          " to double\n"
+        final_value = cast_temp
+      }
+      code = code +
+        "  store double " +
+        final_value +
+        ", double* " +
+        elem_ptr +
+        "\n"
+    } else {
+      code = code + "  store i32 " + stored_value + ", i32* " + elem_ptr + "\n"
+    }
+    index = index + 1
+  }
+  let base_value = expr_value(code, array_temp, array_pointer_type)
+  expr_value_with_array_metadata(
+    base_value, element_type, element_closure_arity,
+  )
 }
 
 ///|
